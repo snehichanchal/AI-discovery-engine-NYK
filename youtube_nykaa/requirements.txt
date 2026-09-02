@@ -1,0 +1,3 @@
+yt-dlp
+youtube-comment-scraper-python
+youtube-transcript-api

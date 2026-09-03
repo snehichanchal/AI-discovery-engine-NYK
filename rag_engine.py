@@ -10,6 +10,14 @@ os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
 os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
 try:
+    import torch
+    torch.set_num_threads(1)
+    if hasattr(torch, "set_grad_enabled"):
+        torch.set_grad_enabled(False)
+except Exception:
+    pass
+
+try:
     __import__('pysqlite3')
     sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
 except Exception:
@@ -22,9 +30,11 @@ VECTOR_DB_DIR = os.path.join(BASE_DIR, "vector_db")
 
 
 def get_embedding_function():
-    """Returns ONNX-based DefaultEmbeddingFunction to prevent PyTorch C-extension segmentation faults on Python 3.14 / Streamlit Cloud."""
+    """Returns SentenceTransformer embedding function with single-thread lock."""
     from chromadb.utils import embedding_functions
-    return embedding_functions.DefaultEmbeddingFunction()
+    return embedding_functions.SentenceTransformerEmbeddingFunction(
+        model_name="all-MiniLM-L6-v2"
+    )
 
 
 def search_and_answer(query: str, selected_sources: list, provider: str, api_key: str, model_name: str, top_k: int = 5):

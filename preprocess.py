@@ -291,8 +291,10 @@ def process_and_save():
         print("Initializing ChromaDB vector store...")
         chroma_client = chromadb.PersistentClient(path=VECTOR_DB_DIR)
 
-        # ONNX embedding function (no PyTorch dependency, prevents Python 3.14 segfaults)
-        sentence_transformer_ef = embedding_functions.DefaultEmbeddingFunction()
+        # SentenceTransformer embedding function with single-thread lock
+        sentence_transformer_ef = embedding_functions.SentenceTransformerEmbeddingFunction(
+            model_name="all-MiniLM-L6-v2"
+        )
 
         # Get or create collection
         collection = chroma_client.get_or_create_collection(

@@ -22,11 +22,9 @@ VECTOR_DB_DIR = os.path.join(BASE_DIR, "vector_db")
 
 
 def get_embedding_function():
-    """Returns SentenceTransformer embedding function with exception handling."""
+    """Returns ONNX-based DefaultEmbeddingFunction to prevent PyTorch C-extension segmentation faults on Python 3.14 / Streamlit Cloud."""
     from chromadb.utils import embedding_functions
-    return embedding_functions.SentenceTransformerEmbeddingFunction(
-        model_name="all-MiniLM-L6-v2"
-    )
+    return embedding_functions.DefaultEmbeddingFunction()
 
 
 def search_and_answer(query: str, selected_sources: list, provider: str, api_key: str, model_name: str, top_k: int = 5):

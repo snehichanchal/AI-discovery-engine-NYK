@@ -1,4 +1,20 @@
 import os
+import sys
+
+# Prevent threading locks & segmentation faults in Streamlit / PyTorch / HuggingFace
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
+try:
+    __import__('pysqlite3')
+    sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+except Exception:
+    pass
+
 import pandas as pd
 import streamlit as st
 
@@ -223,6 +239,12 @@ with tab2:
             st.success(answer)
 
 
+def safe_dataframe(df, **kwargs):
+    try:
+        st.dataframe(df, width="stretch", **kwargs)
+    except Exception:
+        st.dataframe(df, use_container_width=True, **kwargs)
+
 # TAB 3: DATA EXPLORER & STATS
 with tab3:
     st.subheader("Data Explorer & Source Breakdown")
@@ -240,7 +262,7 @@ with tab3:
         st.markdown("#### Feedback Count per Source")
         source_counts = df_all["source_name"].value_counts().reset_index()
         source_counts.columns = ["Data Source", "Record Count"]
-        st.dataframe(source_counts, use_container_width=True)
+        safe_dataframe(source_counts)
 
         st.markdown("#### Ingested Feedback Data Viewer")
         filter_source = st.multiselect(
@@ -249,6 +271,6 @@ with tab3:
             default=df_all["source_name"].unique()
         )
         filtered_df = df_all[df_all["source_name"].isin(filter_source)]
-        st.dataframe(filtered_df[["source_name", "platform", "author", "rating", "date", "text"]], use_container_width=True)
+        safe_dataframe(filtered_df[["source_name", "platform", "author", "rating", "date", "text"]])
     else:
         st.warning("No processed dataset found. Click 'Run / Refresh Data Pre-processing' in the sidebar to generate.")

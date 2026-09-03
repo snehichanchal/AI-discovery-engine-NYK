@@ -1,8 +1,32 @@
 import os
+import sys
+
+# Prevent threading locks & segmentation faults in Streamlit / PyTorch / HuggingFace
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
+try:
+    __import__('pysqlite3')
+    sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+except Exception:
+    pass
+
 from llm_provider import query_llm
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 VECTOR_DB_DIR = os.path.join(BASE_DIR, "vector_db")
+
+
+def get_embedding_function():
+    """Returns SentenceTransformer embedding function with exception handling."""
+    from chromadb.utils import embedding_functions
+    return embedding_functions.SentenceTransformerEmbeddingFunction(
+        model_name="all-MiniLM-L6-v2"
+    )
 
 
 def search_and_answer(query: str, selected_sources: list, provider: str, api_key: str, model_name: str, top_k: int = 5):
@@ -18,15 +42,12 @@ def search_and_answer(query: str, selected_sources: list, provider: str, api_key
 
     try:
         import chromadb
-        from chromadb.utils import embedding_functions
 
         if not os.path.exists(VECTOR_DB_DIR) or not os.listdir(VECTOR_DB_DIR):
             return "⚠️ Vector database not found. Please run the Data Pre-processing script first.", []
 
         chroma_client = chromadb.PersistentClient(path=VECTOR_DB_DIR)
-        sentence_transformer_ef = embedding_functions.SentenceTransformerEmbeddingFunction(
-            model_name="all-MiniLM-L6-v2"
-        )
+        sentence_transformer_ef = get_embedding_function()
 
         collection = chroma_client.get_collection(
             name="user_feedback",

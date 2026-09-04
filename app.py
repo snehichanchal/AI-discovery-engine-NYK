@@ -318,9 +318,9 @@ with tab1:
                         st.write(cite['text'])
 
 
-# TAB 2: MASSIVE CONTEXT ENGINE (5TH APPROACH)
+# TAB 2: MASSIVE CONTEXT ENGINE
 with tab2:
-    st.subheader("Massive Context Engine (5th Approach - Whole Dataset Prompting)")
+    st.subheader("Massive Context Engine")
     st.caption(
         "The full dataset lives in a shared Gemini context cache, uploaded once and "
         "reused by every query. Only your question travels on the wire. Ask follow-up "

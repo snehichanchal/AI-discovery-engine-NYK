@@ -5,7 +5,7 @@ A Streamlit app that ingests scraped Nykaa customer feedback from 8 public sourc
 It offers two contrasting query strategies side by side:
 
 - **Tab 1 — RAG Discovery Engine**: semantic search retrieves the top-K most relevant feedback snippets, and only those go to the LLM. Cheap, fast, cites its sources.
-- **Tab 2 — Massive Context Engine**: the entire filtered dataset (~2,300 records, roughly 120k tokens) is placed into a single prompt. Slower and far more expensive per question, but can answer holistic "rank every complaint by frequency" questions that retrieval would miss.
+- **Tab 2 — Massive Context Engine**: a conversational view over the *entire* dataset (1,935 records, ~179k tokens). The dataset is uploaded once to a shared Gemini context cache, so each question costs only ~20 fresh tokens instead of re-sending everything. Answers holistic "rank every complaint by frequency" questions that retrieval would miss. Chat history is kept in your browser.
 - **Tab 3 — Data Explorer**: record counts per source and a filterable table of everything ingested.
 
 The repository ships with the scraped data, the processed CSV, and a prebuilt vector index, so it runs immediately after clone — no scraping or re-indexing required.
@@ -18,12 +18,17 @@ The repository ships with the scraped data, the processed CSV, and a prebuilt ve
 - A Google Gemini API key ([get one here](https://aistudio.google.com/apikey)).
 - Node.js 18+ **only** if you intend to run the scrapers.
 
+The app is behind a login, and both the credentials and the API key come from the server environment (Section 3).
+
 ## 2. Run it locally
 
 ```bash
 git clone <your-repo-url>
 cd AI-discovery-engine-NYK
 export GEMINI_API_KEY="your-key-here"
+export APP_USERNAME="pick-a-username"
+export APP_PASSWORD="pick-a-password"
+export APP_SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
 ./run.sh
 ```
 
@@ -37,15 +42,22 @@ If a venv already exists, you can skip straight to:
 
 On the very first RAG query, ChromaDB downloads its ONNX embedding model (~80 MB) to `~/.cache/chroma`. This happens once.
 
-## 3. Provide the API key
+## 3. Configuration
 
-The app takes the Gemini key from the **server environment** and refuses to start without it. There is no key input in the UI — this is deliberate, see Section 8.
+Everything is read from the **server environment**; nothing sensitive is ever entered in the UI (see Section 8). `run.sh` refuses to start the server if a required variable is missing.
 
-```bash
-export GEMINI_API_KEY="your-key-here"
-```
+| Variable | Required | Purpose |
+|---|---|---|
+| `GEMINI_API_KEY` | yes | Gemini API key ([get one](https://aistudio.google.com/apikey)) |
+| `APP_USERNAME` | yes | Login username |
+| `APP_PASSWORD` | yes | Login password |
+| `APP_SECRET_KEY` | strongly recommended | Signs session tokens. 64 hex chars: `python3 -c 'import secrets; print(secrets.token_hex(32))'` |
+| `GEMINI_MODEL` | no | Overrides `gemini-flash-latest` — use it if a model is ever rejected for caching |
+| `GEMINI_CACHE_TTL_SECONDS` | no | Cache lifetime, default 24h |
 
-Alternatively, create a local secrets file (checked only if the env var is unset):
+**Set `APP_SECRET_KEY`.** Without it a random key is generated per process, so every restart invalidates all sessions and signs everyone out. It is not the login password — nobody ever types it.
+
+Alternatively, put the same keys in a local secrets file (consulted only when the environment variable is unset):
 
 ```bash
 cp .streamlit/secrets.toml.example .streamlit/secrets.toml
@@ -53,7 +65,7 @@ cp .streamlit/secrets.toml.example .streamlit/secrets.toml
 
 `.streamlit/secrets.toml` is gitignored and will not be committed.
 
-If the key is missing, the app stops immediately with instructions rather than rendering a broken UI.
+Sessions last 72 hours, after which the app asks for the password again.
 
 ## 4. Using the app
 
@@ -62,13 +74,17 @@ If the key is missing, the app stops immediately with instructions rather than r
 
 The provider and model are fixed (`gemini-flash-latest`) and shown in the sidebar for reference.
 
-Costs are worth knowing before you click: **Tab 1 sends a handful of snippets; Tab 2 sends the whole dataset on every single query**, around 120k tokens. Start with Tab 1 and reach for Tab 2 only for genuinely dataset-wide questions.
+Tab 2 is a chat: ask follow-up questions and it carries the previous turns. The transcript is stored in **your browser** (`localStorage`), so it survives a page reload but is never sent to the server, shared with other viewers, or synced across devices. "Clear chat" wipes it.
+
+Costs: Tab 1 sends a handful of snippets. Tab 2 serves the dataset from a shared Gemini cache — the first query after a data change uploads ~179k tokens once, and every question after that costs roughly 20 fresh tokens. The metrics under each answer show cached vs fresh tokens for that turn.
 
 ---
 
 ## 5. Adding new data and re-indexing
 
-Data flows in one direction: **raw JSON → `preprocess.py` → `processed_data/unified_feedback.csv` + `vector_db/`**. Re-indexing is what makes new data visible to the app.
+**Never edit `processed_data/unified_feedback.csv` by hand.** It is generated, and `preprocess.py` overwrites it completely — manual edits are lost on the next run. Add data as raw JSON and regenerate.
+
+Data flows one way: **raw JSON → `preprocess.py` → `processed_data/unified_feedback.csv` + `vector_db/` → the app**.
 
 ### Step 1 — Produce the raw JSON
 
@@ -83,16 +99,18 @@ cd app_store && npm install && node scrape.js
 ./venv/bin/python reddit_data/scrape_playwright.py
 ```
 
+You can also simply drop a new JSON file into the relevant directory.
+
 ### Step 2 — Make sure `preprocess.py` knows about the file
 
-If you added records to a file that is **already listed** in `DATA_SOURCES` at the top of `preprocess.py`, skip to Step 3.
+If you only added records to a file **already listed** in `DATA_SOURCES`, skip to Step 3.
 
-For a genuinely new file or platform, two edits are required:
+For a new file or platform, two edits are required:
 
 1. Add the path to the relevant `DATA_SOURCES` entry (or add a new entry with its own `source_key` and display `name`).
 2. Add a matching branch in `load_raw_data()` mapping that source's field names onto the unified schema: `id, source_key, source_name, platform, author, rating, date, url, text`.
 
-The second step is easy to forget — without it, the file is loaded and then silently ignored.
+The second is easy to forget — without it the file is read and then **silently ignored**, with no error.
 
 ### Step 3 — Re-index
 
@@ -100,29 +118,66 @@ The second step is easy to forget — without it, the file is loaded and then si
 ./venv/bin/python preprocess.py
 ```
 
-This rewrites the CSV and rebuilds the ChromaDB collection from scratch (it clears existing vectors first, so it is safe to re-run). Expect a minute or two. It should end with:
+This rewrites the CSV and rebuilds the ChromaDB collection from scratch (it clears existing vectors first, so it is safe to re-run). Expect a minute or two.
+
+A cleaning pass runs first, so the retained total is lower than the raw count:
 
 ```
-Successfully indexed NNNN records into ChromaDB vector database.
+Cleaning: dropped 83 duplicates, 18 near-empty, 262 off-topic.
+Retained 1935 records after cleaning.
+Successfully indexed 1935 records into ChromaDB vector database.
 ```
 
-Confirm the count went up as you expected. You can also just launch the app and check Tab 3.
+Duplicates are compared on normalized text; near-empty means fewer than 3 words; the off-topic filter applies **only** to the broad-search sources (`reddit_data`, `social_media`, `youtube_data`), since the review sources are on-topic by construction. Tune the rules via `THREAD_SOURCES`, `RELEVANCE_PATTERN`, and `MIN_WORDS` at the top of `preprocess.py`.
 
-### Step 4 — Commit the regenerated artifacts
+### Step 4 — Update the expected record count in the tests
 
-Both the CSV and the vector store are committed on purpose, so the deployed app never has to re-embed on startup:
+`tests/e2e/test_04_tabs_1_and_3.py` asserts the count shown in Tab 3:
+
+```python
+EXPECTED_RECORDS = "1,935"   # <- set this to your new total
+```
+
+That test failing after a re-index is intentional — it is a tripwire proving the data actually changed.
+
+### Step 5 — Verify
+
+With the app running (see Section 2), from the repository root:
 
 ```bash
-git add <your new raw json> processed_data/unified_feedback.csv vector_db/
+./venv/bin/pip install -r requirements-dev.txt   # first time only
+./venv/bin/playwright install chromium           # first time only
+
+export E2E_USERNAME="$APP_USERNAME" E2E_PASSWORD="$APP_PASSWORD"
+./venv/bin/pytest tests/e2e
+```
+
+That run is free. Add `E2E_RUN_LLM=1` to include the tests that call Gemini and cost money. See `tests/e2e/README.md`.
+
+### Step 6 — Commit the regenerated artifacts
+
+The CSV and the vector store are committed on purpose, so the deployed app never re-embeds on startup:
+
+```bash
+git add <your new raw json> processed_data/unified_feedback.csv vector_db/ tests/e2e/
 git commit -m "Add <source> data and re-index"
 git push
 ```
 
-`vector_db/` includes `chroma.sqlite3` **and** the UUID-named subdirectory holding the HNSW index files. Commit the whole directory — the subdirectory name changes each time the collection is rebuilt, so `git add vector_db/` (not individual files) is what you want, and you will see the old subdirectory deleted and a new one added.
+Use `git add vector_db/` as a **directory**. The HNSW index lives in a UUID-named subdirectory that gets a **new name** on every rebuild, so staging individual files would leave a stale index committed. Expect to see one directory deleted and another added.
 
-> **The one rule that matters:** `preprocess.py` and `rag_engine.get_embedding_function()` must always use the same embedding model. If you change the embedder in one place, change it in the other and re-run `preprocess.py`. A mismatch does not raise an error — it silently returns irrelevant search results.
+### What happens automatically after the push
 
----
+Streamlit Cloud redeploys. Because the CSV changed, its fingerprint changes, so the first Tab 2 query builds a **new** Gemini context cache — one ~179k-token upload, a few seconds — and every question after that is cheap again. Tab 1 uses the committed vector index immediately, with no re-embedding on the server. Nothing else needs touching.
+
+Two caveats:
+
+- The **old cache keeps billing storage until its TTL expires** (24h by default). Gemini has no delete-on-replace.
+- A **code-only push rebuilds nothing.** The container restarts and its in-memory cache pointer is lost, but the app rediscovers the live cache through `caches.list()` and reuses it. Only a dataset change forces a rebuild.
+
+> **The rule that matters:** `preprocess.py` and `rag_engine.get_embedding_function()` must always use the same embedding model. Change one without re-running `preprocess.py` and retrieval silently returns irrelevant results — no error is raised.
+
+Locally, the sidebar's **🔄 Run / Refresh Data Pre-processing** button does Step 3 and drops the cache pointer in one click. Avoid it in production: it re-indexes into an ephemeral filesystem that is discarded on the next restart.
 
 ## 6. Deploying to Streamlit Community Cloud
 
@@ -132,7 +187,16 @@ Deploying from a fresh repo:
 2. At [share.streamlit.io](https://share.streamlit.io), click **New app** and select the repo and branch.
 3. Set **Main file path** to `app.py`.
 4. Under **Advanced settings**, confirm the Python version is **3.11**. `runtime.txt` pins this; do not select 3.14, which has known segfault issues with this stack.
-5. Add your key under **Secrets** as `GEMINI_API_KEY = "your-key-here"` (see `.streamlit/secrets.toml.example`). Without it the app will start but show a configuration error.
+5. Add **all** the required variables under **Secrets** (Streamlit Cloud injects them as environment variables):
+
+   ```toml
+   GEMINI_API_KEY = "your-gemini-key"
+   APP_USERNAME   = "pick-a-username"
+   APP_PASSWORD   = "pick-a-password"
+   APP_SECRET_KEY = "64-hex-chars-from-secrets.token_hex(32)"
+   ```
+
+   Your local shell exports are **not** visible to Streamlit Cloud. Omitting `APP_SECRET_KEY` here signs every user out on each redeploy. Note that `run.sh` is not used on Cloud — it runs `app.py` directly — so a missing variable surfaces as a crashed app rather than a startup message.
 6. Deploy. The first build takes a few minutes while dependencies install.
 
 **Resource footprint** — this fits the free tier comfortably: roughly 300 MB of dependencies and under 300 MB of RAM in steady state. Embeddings use ChromaDB's bundled ONNX model rather than PyTorch specifically to keep it that way, so **do not add `sentence-transformers` or `torch` back to `requirements.txt`** — doing so pushes install size past 2 GB and RAM past 1 GB, and reintroduces the segfaults.
@@ -155,6 +219,10 @@ Avoid the sidebar's **🔄 Run / Refresh Data Pre-processing** button in product
 
 | Symptom | Cause and fix |
 |---|---|
+| Everyone is signed out after a redeploy | `APP_SECRET_KEY` is unset, so the signing key is random per process. Set it in Secrets. |
+| Tab 2 warns "Context caching unavailable" | The model was rejected for caching or the API errored. The app falls back to sending the dataset uncached (correct answers, higher cost). Try pinning `GEMINI_MODEL` to a concrete model ID. |
+| Chat history vanished | It lives in the browser's `localStorage` — a different browser, a private window, or cleared site data all start empty. It is per-browser by design. |
+| `EXPECTED_RECORDS` assertion fails | You re-indexed; update the constant in `tests/e2e/test_04_tabs_1_and_3.py` to the new total. |
 | `⚠️ Vector database not found` | `vector_db/` is missing or empty. Run `./venv/bin/python preprocess.py`. |
 | RAG returns irrelevant snippets | The index and query path are using different embedders. Re-run `preprocess.py`. |
 | `sqlite3` version error from ChromaDB | System SQLite is too old. `pysqlite3-binary` in `requirements.txt` handles this on Linux; make sure it installed. |
@@ -168,10 +236,13 @@ The key is read server-side in `app.py` and passed to `llm_provider.query_llm()`
 
 This matters: Streamlit sends widget values to the browser, so prefilling a `text_input` with a secret — even one marked `type="password"` — hands the plaintext key to every visitor, who can read it out of the DOM or the WebSocket frames. Masking is a display attribute, not a transport control. Keep the key out of widgets.
 
-The practical consequence is that **anyone who can open the deployed app spends your Gemini quota**. Tab 2 sends roughly 120k tokens per question. If you deploy publicly, restrict viewer access via Streamlit Cloud's app settings, and monitor usage in Google AI Studio.
+The app is also behind a login (`APP_USERNAME` / `APP_PASSWORD`), with sessions carried by HMAC-signed tokens that expire after 72 hours. The token is verified inside the query engines themselves, not only in the UI, so calling them without a valid session is refused.
+
+The practical consequence is still that **anyone who can sign in spends your Gemini quota**. Caching makes each question cheap (~20 fresh tokens), but the first query after a data change uploads the full dataset. If you deploy publicly, restrict viewer access via Streamlit Cloud's app settings and monitor usage in Google AI Studio.
 
 ## 9. Further reading
 
+- `tests/e2e/README.md` — the browser test suite and how to run it
 - `CLAUDE.md` — architecture notes and conventions
 - `docs/docs/readme.md` — full system architecture with diagrams
 - `docs/docs/deployment_plan.md`, `docs/docs/implementation_plan.md`

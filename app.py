@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 
 # Prevent threading locks & segmentation faults in Streamlit / PyTorch / HuggingFace
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -18,6 +19,8 @@ except Exception:
 import pandas as pd
 import streamlit as st
 
+from auth import (AuthError, SESSION_TTL_SECONDS, credentials_configured,
+                  issue_session_token, verify_session_token)
 from preprocess import process_and_save, DATA_SOURCES
 from rag_engine import search_and_answer
 from context_engine import query_massive_context
@@ -106,6 +109,76 @@ if not API_KEY:
     os._exit(1)
 
 
+# --- Authentication ----------------------------------------------------------
+if not credentials_configured():
+    sys.stderr.write(
+        "\nERROR: APP_USERNAME and APP_PASSWORD are not set.\n\n"
+        "Set them in the server environment and try again:\n\n"
+        "    export APP_USERNAME=\"your-username\"\n"
+        "    export APP_PASSWORD=\"your-password\"\n"
+        "    export APP_SECRET_KEY=\"$(python3 -c 'import secrets;print(secrets.token_hex(32))')\"\n"
+        "    ./run.sh\n\n"
+        "On Streamlit Community Cloud, add them under App settings -> Secrets.\n\n"
+    )
+    sys.stderr.flush()
+    os._exit(1)
+
+
+def current_session_token():
+    """Returns the active token, clearing it once the 72-hour window closes."""
+    token = st.session_state.get("session_token", "")
+    if not token:
+        return ""
+    try:
+        verify_session_token(token)
+        return token
+    except AuthError as e:
+        st.session_state.clear()
+        st.session_state["auth_message"] = str(e)
+        return ""
+
+
+def require_login():
+    """Renders the sign-in form until the visitor holds a valid session token.
+
+    Streamlit re-runs this script top to bottom on every interaction, so the
+    token lives in st.session_state and is re-verified on each run. Nothing
+    below this call executes for an unauthenticated session.
+    """
+    if current_session_token():
+        return
+
+    st.markdown('<div class="main-header">🔍 User Feedback Discovery Engine</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sub-header">Sign in to continue.</div>', unsafe_allow_html=True)
+
+    expired = st.session_state.get("auth_message")
+    if expired:
+        st.warning(expired)
+
+    _, mid, _ = st.columns([1, 2, 1])
+    with mid:
+        with st.form("login_form"):
+            username = st.text_input("Username")
+            password = st.text_input("Password", type="password")
+            submitted = st.form_submit_button("Sign in", type="primary")
+
+        if submitted:
+            from auth import verify_credentials
+            if verify_credentials(username, password):
+                st.session_state.clear()
+                st.session_state["session_token"] = issue_session_token(username.strip())
+                st.session_state["username"] = username.strip()
+                st.rerun()
+            else:
+                st.error("Invalid username or password.")
+
+    st.stop()
+
+
+require_login()
+SESSION_TOKEN = current_session_token()
+
+
 # Sidebar Configuration
 st.sidebar.title("⚙️ Engine Configuration")
 
@@ -130,6 +203,16 @@ for key, info in DATA_SOURCES.items():
     )
     if is_checked:
         selected_sources.append(key)
+
+st.sidebar.divider()
+
+_expiry = verify_session_token(SESSION_TOKEN)["exp"]
+_hours_left = max(0, int((_expiry - time.time()) // 3600))
+st.sidebar.caption(f"Signed in as **{st.session_state.get('username', '')}**")
+st.sidebar.caption(f"Session expires in ~{_hours_left}h (max {SESSION_TTL_SECONDS // 3600}h).")
+if st.sidebar.button("Sign out"):
+    st.session_state.clear()
+    st.rerun()
 
 st.sidebar.divider()
 
@@ -188,7 +271,8 @@ with tab1:
                     provider=PROVIDER,
                     api_key=API_KEY,
                     model_name=MODEL_NAME,
-                    top_k=top_k
+                    top_k=top_k,
+                    session_token=SESSION_TOKEN
                 )
 
             st.markdown("### 💡 Direct Answer")
@@ -230,7 +314,8 @@ with tab2:
                     provider=PROVIDER,
                     api_key=API_KEY,
                     model_name=MODEL_NAME,
-                    enable_caching=caching_enabled
+                    enable_caching=caching_enabled,
+                    session_token=SESSION_TOKEN
                 )
 
             st.markdown("### 📊 Query Execution Metrics")

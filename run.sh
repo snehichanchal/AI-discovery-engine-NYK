@@ -27,6 +27,25 @@ if [ -z "${GEMINI_API_KEY:-}" ]; then
     exit 1
 fi
 
+for var in APP_USERNAME APP_PASSWORD; do
+    if [ -z "${!var:-}" ]; then
+        echo "ERROR: $var is not set." >&2
+        echo >&2
+        echo "Login credentials are read from the server environment:" >&2
+        echo >&2
+        echo "    export APP_USERNAME=\"your-username\"" >&2
+        echo "    export APP_PASSWORD=\"your-password\"" >&2
+        echo "    export APP_SECRET_KEY=\"\$(python3 -c 'import secrets;print(secrets.token_hex(32))')\"" >&2
+        echo "    ./run.sh" >&2
+        exit 1
+    fi
+done
+
+if [ -z "${APP_SECRET_KEY:-}" ]; then
+    echo "WARNING: APP_SECRET_KEY is not set; a random key will be generated per" >&2
+    echo "         process, so all sessions are invalidated when the app restarts." >&2
+fi
+
 # Ensure venv exists
 if [ ! -d "venv" ]; then
     echo "Creating virtual environment..."

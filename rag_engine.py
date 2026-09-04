@@ -15,6 +15,7 @@ try:
 except Exception:
     pass
 
+from auth import AuthError, verify_session_token
 from llm_provider import query_llm
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -27,14 +28,22 @@ def get_embedding_function():
     return embedding_functions.DefaultEmbeddingFunction()
 
 
-def search_and_answer(query: str, selected_sources: list, provider: str, api_key: str, model_name: str, top_k: int = 5):
+def search_and_answer(query: str, selected_sources: list, provider: str, api_key: str, model_name: str, top_k: int = 5, session_token: str = ""):
     """
+    Requires a valid session token; the retrieval and LLM call are refused
+    without one, so this entry point is not usable by bypassing the UI.
+
     RAG Pipeline:
     1. Embed query & search ChromaDB vector store.
     2. Filter results by selected_sources.
     3. Pass retrieved contexts to LLM.
     4. Return AI answer + source references.
     """
+    try:
+        verify_session_token(session_token)
+    except AuthError as e:
+        return f"🔒 {e}", []
+
     if not query.strip():
         return "Please enter a question.", []
 

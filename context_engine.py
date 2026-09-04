@@ -1,18 +1,26 @@
 import os
 import pandas as pd
 import time
+from auth import AuthError, verify_session_token
 from llm_provider import query_llm
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROCESSED_CSV = os.path.join(BASE_DIR, "processed_data", "unified_feedback.csv")
 
 
-def query_massive_context(query: str, selected_sources: list, provider: str, api_key: str, model_name: str, enable_caching: bool = True):
+def query_massive_context(query: str, selected_sources: list, provider: str, api_key: str, model_name: str, enable_caching: bool = True, session_token: str = ""):
     """
+    Requires a valid session token; refused without one.
+
     Approach 5: Massive Context Window (Direct Prompting)
     Passes the entire feedback dataset (filtered by selected sources) directly into the LLM context.
     Supports context caching optimization for Gemini & Claude.
     """
+    try:
+        verify_session_token(session_token)
+    except AuthError as e:
+        return f"🔒 {e}", 0, 0, 0
+
     if not query.strip():
         return "Please enter a question.", 0, 0, 0
 

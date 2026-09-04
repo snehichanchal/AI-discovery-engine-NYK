@@ -23,9 +23,10 @@ VECTOR_DB_DIR = os.path.join(BASE_DIR, "vector_db")
 
 
 def get_embedding_function():
-    """Returns ChromaDB's ONNX all-MiniLM-L6-v2 embedder (no torch; see preprocess.py)."""
-    from chromadb.utils import embedding_functions
-    return embedding_functions.DefaultEmbeddingFunction()
+    """Delegates to embeddings.py -- the index and this query path must match."""
+    from embeddings import get_embedding_function as shared
+
+    return shared()
 
 
 def search_and_answer(query: str, selected_sources: list, provider: str, api_key: str, model_name: str, top_k: int = 5, session_token: str = ""):
@@ -60,6 +61,12 @@ def search_and_answer(query: str, selected_sources: list, provider: str, api_key
             name="user_feedback",
             embedding_function=sentence_transformer_ef
         )
+
+        from embeddings import check_index_matches
+
+        mismatch = check_index_matches(collection)
+        if mismatch:
+            return f"⚠️ {mismatch}", []
 
         # Build metadata filter if a strict subset of sources is selected.
         # Counted against DATA_SOURCES rather than a literal: with a hardcoded

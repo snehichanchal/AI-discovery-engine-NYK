@@ -92,7 +92,11 @@ Data flows one way: **raw JSON → `preprocess.py` → `processed_data/unified_f
 
 `user-interviews/*.txt` holds first-party research transcripts and is listed **first** in the sidebar. Unlike every other source it is plain text, not JSON: speaker-labelled Hindi, one turn per line (`साक्षात्कारकर्ता:` / `प्रतिभागी:`). `parse_interview()` in `preprocess.py` splits each file into one record per participant answer, carrying the preceding question for context, with a deterministic id so the CSV stays stable across re-runs. The directory is globbed, so **dropping in another `.txt` needs no code change** — just re-run Step 3.
 
-> **Known limitation.** The transcripts are Hindi, but the vector index uses `all-MiniLM-L6-v2`, an English-centric model. Measured behaviour: an English query such as "wishlist bookmark purchase intent" returns **0 of 5** interview records, while the Hindi "विशलिस्ट बुकमार्क" returns **5 of 5**. So in **Tab 1 (RAG)** the interviews are reliably reachable only by Hindi queries, or by unchecking the other sources. **Tab 2 is unaffected** — Gemini reads the transcripts natively and cites them accurately. Fixing Tab 1 properly would mean a multilingual embedding model (and a full re-index) or translating the transcripts during preprocessing.
+Because the transcripts are Hindi, the vector index uses Gemini's multilingual `gemini-embedding-001` (768 dimensions) rather than an English-only model, so English questions in Tab 1 retrieve Hindi answers. Measured on 60 interview records against 60 English ones: the previous `all-MiniLM-L6-v2` returned **0/20** interview records for English queries, Gemini **17/20**. Transliterating the Hindi to Latin script was tested too and scored **0/20** — phonetic transliteration produces `vishalista`, not `wishlist`, so it does not help.
+
+The embedder is chosen in one place, `embeddings.py`, imported by both `preprocess.py` and `rag_engine.py` so they cannot drift apart. The index records which embedder built it, and Tab 1 refuses to answer with a clear warning if that no longer matches — a mismatch would otherwise return plausible-looking nonsense. Without `GEMINI_API_KEY` the code falls back to the bundled ONNX MiniLM so local work is still possible, with English-only retrieval.
+
+Trade-off: query embedding is now a network call, adding roughly 500 ms to a Tab 1 search, and RAG depends on Gemini being reachable.
 
 ### Step 1 — Produce the raw JSON
 

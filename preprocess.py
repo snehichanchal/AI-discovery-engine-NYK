@@ -419,13 +419,28 @@ def process_and_save():
         print("Initializing ChromaDB vector store...")
         chroma_client = chromadb.PersistentClient(path=VECTOR_DB_DIR)
 
-        # ONNX all-MiniLM-L6-v2 embedder; must stay identical to rag_engine.get_embedding_function()
-        sentence_transformer_ef = embedding_functions.DefaultEmbeddingFunction()
+        # Shared with rag_engine via embeddings.py so the two cannot diverge.
+        from embeddings import embedder_id, get_embedding_function
+
+        sentence_transformer_ef = get_embedding_function()
+        active_embedder = embedder_id()
+        print(f"Embedding model: {active_embedder}")
 
         # Get or create collection
+        # Changing embedder changes vector dimensionality, so the old collection
+        # cannot be reused -- drop and rebuild rather than fail on a dim mismatch.
+        try:
+            existing = chroma_client.get_collection(name="user_feedback")
+            if (existing.metadata or {}).get("embedder_id") != active_embedder:
+                print("Embedder changed; dropping the old collection.")
+                chroma_client.delete_collection(name="user_feedback")
+        except Exception:
+            pass
+
         collection = chroma_client.get_or_create_collection(
             name="user_feedback",
-            embedding_function=sentence_transformer_ef
+            embedding_function=sentence_transformer_ef,
+            metadata={"embedder_id": active_embedder},
         )
 
         # Reset/re-populate
@@ -435,7 +450,7 @@ def process_and_save():
             collection.delete(ids=existing_ids)
 
         print("Indexing documents into ChromaDB...")
-        batch_size = 200
+        batch_size = 100  # each batch is an embedding API call
         for i in range(0, len(records), batch_size):
             batch = records[i:i + batch_size]
             documents = [r["text"] for r in batch]
@@ -456,6 +471,24 @@ def process_and_save():
             )
 
         print(f"Successfully indexed {len(records)} records into ChromaDB vector database.")
+
+        # Dropping a collection leaves its HNSW directory behind. These are
+        # committed to the repo, so prune anything no longer referenced by a
+        # live segment rather than carrying dead megabytes forever.
+        try:
+            import shutil
+            import sqlite3
+
+            db = sqlite3.connect(os.path.join(VECTOR_DB_DIR, "chroma.sqlite3"))
+            live = {row[0] for row in db.execute("select id from segments")}
+            db.close()
+            for entry in os.listdir(VECTOR_DB_DIR):
+                path = os.path.join(VECTOR_DB_DIR, entry)
+                if os.path.isdir(path) and entry not in live:
+                    shutil.rmtree(path)
+                    print(f"Pruned orphaned index directory: {entry}")
+        except Exception as e:
+            print(f"Index cleanup skipped: {e}")
     except Exception as e:
         print(f"ChromaDB indexing warning: {e}")
 

@@ -21,6 +21,7 @@ import streamlit as st
 
 from auth import (AuthError, SESSION_TTL_SECONDS, credentials_configured,
                   issue_session_token, verify_session_token)
+import browser_storage
 import gemini_cache
 from preprocess import process_and_save, DATA_SOURCES
 from rag_engine import search_and_answer
@@ -54,6 +55,33 @@ st.markdown("""
         padding: 1.2rem;
         border: 1px solid #E0E0E0;
         margin-bottom: 1rem;
+    }
+    /* Pin Tab 2's chat box to the bottom. `sticky` rather than `fixed` so it
+       inherits the content column's width and respects the sidebar, with no
+       offset math to keep in sync. :has() scopes both rules to the tab that
+       actually contains a chat input, leaving the other tabs untouched.
+       Note the flex item is the element *container*, not the chat input two
+       levels below it -- margin-top:auto on the input itself does nothing. */
+    [role="tabpanel"]:has([data-testid="stChatInput"]) > [data-testid="stVerticalBlock"] {
+        display: flex;
+        flex-direction: column;
+        min-height: calc(100vh - 245px);
+    }
+    [data-testid="stElementContainer"]:has(> [data-testid="stChatInput"]) {
+        /* auto margin pushes it down when the transcript is short; sticky holds
+           it in view once the transcript is long enough to scroll. */
+        margin-top: auto;
+        position: sticky;
+        bottom: 0;
+        z-index: 99;
+    }
+    /* Opaque strip so transcript text scrolls underneath, not through. */
+    [data-testid="stElementContainer"]:has(> [data-testid="stChatInput"])::before {
+        content: "";
+        position: absolute;
+        left: -1rem; right: -1rem; top: -0.75rem; bottom: -1rem;
+        background: var(--background-color, #FFFFFF);
+        z-index: -1;
     }
     .metric-badge {
         background-color: #E3F2FD;
@@ -295,58 +323,115 @@ with tab2:
     st.subheader("Massive Context Engine (5th Approach - Whole Dataset Prompting)")
     st.caption(
         "The full dataset lives in a shared Gemini context cache, uploaded once and "
-        "reused by every query. Only your question travels on the wire."
+        "reused by every query. Only your question travels on the wire. Ask follow-up "
+        "questions -- the conversation is kept in your browser."
     )
 
-    mc_query = st.text_input(
-        "Ask a holistic question over the entire dataset:",
-        placeholder="e.g., Synthesize the top 5 distinct customer issues across all platforms and rank them by frequency.",
-        key="mc_query"
+    # Restore the conversation from localStorage. Server-side session state is
+    # discarded on page reload, so without this a refresh would lose the thread.
+    browser_storage.load_once()
+    history = st.session_state.setdefault(browser_storage.HISTORY_KEY, [])
+
+    # A clear sets this flag and reruns; the write happens here, on a render
+    # that is not immediately followed by another rerun. Writing inside the
+    # button handler instead would race -- the rerun replaces the component's
+    # pending args before the browser ever commits them.
+    if st.session_state.pop("mc_pending_clear", False):
+        browser_storage.save([])
+
+    hcol1, hcol2 = st.columns([4, 1])
+    with hcol1:
+        if history:
+            st.caption(f"{len(history)} message(s) in this conversation, saved in your browser.")
+    with hcol2:
+        if history and st.button("🗑️ Clear chat", key="btn_clear_chat"):
+            st.session_state[browser_storage.HISTORY_KEY] = []
+            st.session_state["mc_pending_clear"] = True
+            st.rerun()
+
+    # Transcript
+    for entry in history:
+        with st.chat_message("user"):
+            st.markdown(entry.get("question", ""))
+        with st.chat_message("assistant"):
+            st.markdown(entry.get("answer", ""))
+            meta = entry.get("meta") or {}
+            if meta:
+                bits = []
+                if meta.get("cached_tokens"):
+                    bits.append(f"{meta['cached_tokens']:,} cached tokens")
+                if meta.get("fresh_tokens"):
+                    bits.append(f"{meta['fresh_tokens']:,} fresh")
+                if meta.get("elapsed"):
+                    bits.append(f"{meta['elapsed']}s")
+                if bits:
+                    st.caption(" · ".join(bits))
+
+    mc_query = st.chat_input(
+        "Ask a question about the feedback dataset...",
+        key="mc_chat_input",
     )
 
-    if st.button("⚡ Query Whole-Dataset Engine", type="primary", key="btn_mc"):
+    if mc_query:
         if not selected_sources:
             st.warning("Please select at least one data source from the sidebar checkboxes.")
-        elif not mc_query.strip():
-            st.warning("Please enter a question.")
         else:
+            with st.chat_message("user"):
+                st.markdown(mc_query)
+
             spinner_text = (
                 "Building the shared dataset cache (one-time), then querying "
                 f"{PROVIDER_LABEL}..."
                 if not gemini_cache.cache_status()["cache_name"]
                 else f"Querying {PROVIDER_LABEL} against the cached dataset..."
             )
-            with st.spinner(spinner_text):
-                mc_result = query_massive_context(
-                    query=mc_query,
-                    selected_sources=selected_sources,
-                    provider=PROVIDER,
-                    api_key=API_KEY,
-                    model_name=MODEL_NAME,
-                    session_token=SESSION_TOKEN,
-                    all_sources=list(DATA_SOURCES.keys())
-                )
+            with st.chat_message("assistant"):
+                with st.spinner(spinner_text):
+                    mc_result = query_massive_context(
+                        query=mc_query,
+                        selected_sources=selected_sources,
+                        provider=PROVIDER,
+                        api_key=API_KEY,
+                        model_name=MODEL_NAME,
+                        session_token=SESSION_TOKEN,
+                        all_sources=list(DATA_SOURCES.keys()),
+                        history=history,
+                    )
 
-            st.markdown("### 📊 Query Execution Metrics")
-            mcol1, mcol2, mcol3, mcol4 = st.columns(4)
-            mcol1.metric("Cached Records", f"{mc_result.total_records:,}")
-            mcol2.metric("Cached Tokens", f"{mc_result.cached_tokens:,}")
-            fresh_tokens = max(0, mc_result.prompt_tokens - mc_result.cached_tokens)
-            mcol3.metric("Fresh Tokens", f"{fresh_tokens:,}")
-            mcol4.metric("Latency", f"{mc_result.elapsed_seconds} s")
+                st.markdown(mc_result.answer)
 
-            if mc_result.cache_created:
-                st.info("Shared cache built by this query. Every later query reuses it.")
-            if mc_result.cache_error:
-                st.warning(
-                    "Context caching unavailable, so the full dataset was sent uncached "
-                    f"(this query cost more than it needed to). Reason: {mc_result.cache_error}"
-                )
-            if mc_result.sources_note:
-                st.caption(mc_result.sources_note)
+                fresh_tokens = max(0, mc_result.prompt_tokens - mc_result.cached_tokens)
+                bits = []
+                if mc_result.cached_tokens:
+                    bits.append(f"{mc_result.cached_tokens:,} cached tokens")
+                if fresh_tokens:
+                    bits.append(f"{fresh_tokens:,} fresh")
+                bits.append(f"{mc_result.elapsed_seconds}s")
+                if mc_result.total_records:
+                    bits.append(f"{mc_result.total_records:,} records")
+                st.caption(" · ".join(bits))
 
-            st.markdown("### 💡 Comprehensive Whole-Dataset Synthesis")
-            st.success(mc_result.answer)
+                if mc_result.cache_created:
+                    st.info("Shared cache built by this query. Every later query reuses it.")
+                if mc_result.cache_error:
+                    st.warning(
+                        "Context caching unavailable, so the full dataset was sent uncached "
+                        f"(this query cost more than it needed to). Reason: {mc_result.cache_error}"
+                    )
+                if mc_result.sources_note:
+                    st.caption(mc_result.sources_note)
+
+            history.append({
+                "question": mc_query,
+                "answer": mc_result.answer,
+                "meta": {
+                    "cached_tokens": mc_result.cached_tokens,
+                    "fresh_tokens": fresh_tokens,
+                    "elapsed": mc_result.elapsed_seconds,
+                },
+            })
+            st.session_state[browser_storage.HISTORY_KEY] = history
+            browser_storage.save(history)
 
 
 def safe_dataframe(df, **kwargs):

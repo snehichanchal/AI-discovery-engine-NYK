@@ -51,9 +51,30 @@ def _source_instruction(selected_sources, all_sources) -> str:
     )
 
 
+# Prior turns replayed for follow-up questions. Capped because every turn is
+# fresh (uncached) input on each request, unlike the dataset itself.
+MAX_HISTORY_TURNS = 6
+
+
+def _build_contents(history, question):
+    """Renders prior turns plus the new question for the Gemini contents list."""
+    from google.genai import types
+
+    turns = []
+    for entry in (history or [])[-MAX_HISTORY_TURNS:]:
+        q = (entry.get("question") or "").strip()
+        a = (entry.get("answer") or "").strip()
+        if not q or not a:
+            continue
+        turns.append(types.Content(role="user", parts=[types.Part(text=q)]))
+        turns.append(types.Content(role="model", parts=[types.Part(text=a)]))
+    turns.append(types.Content(role="user", parts=[types.Part(text=question)]))
+    return turns
+
+
 def query_massive_context(query: str, selected_sources: list, provider: str, api_key: str,
                           model_name: str, session_token: str = "",
-                          all_sources: list = None) -> MassiveContextResult:
+                          all_sources: list = None, history: list = None) -> MassiveContextResult:
     """Requires a valid session token; refused without one."""
     try:
         verify_session_token(session_token)
@@ -84,7 +105,9 @@ def query_massive_context(query: str, selected_sources: list, provider: str, api
         cache = gemini_cache.get_or_create_cache(get_client(api_key), model_name)
         result.cache_created = cache.was_created
         result.total_records = cache.record_count
-        text, usage = generate_with_cache(api_key, model_name, cache.name, question)
+        text, usage = generate_with_cache(
+            api_key, model_name, cache.name, _build_contents(history, question)
+        )
     except Exception as cache_exc:
         # Caching unavailable (model not cacheable, quota, API error): fall back
         # to the full uncached prompt so the app keeps working.
@@ -92,9 +115,13 @@ def query_massive_context(query: str, selected_sources: list, provider: str, api
         try:
             dataset_text, record_count = gemini_cache.build_dataset_text()
             result.total_records = record_count
+            transcript = ""
+            for entry in (history or [])[-MAX_HISTORY_TURNS:]:
+                if entry.get("question") and entry.get("answer"):
+                    transcript += f"Previous question: {entry['question']}\nPrevious answer: {entry['answer']}\n\n"
             prompt = (
                 f"COMPLETE USER FEEDBACK DATASET ({record_count} Records):\n\n"
-                f"{dataset_text}\n\n====================\n{question}"
+                f"{dataset_text}\n\n====================\n{transcript}{question}"
             )
             text, usage = generate_uncached(
                 api_key, model_name, gemini_cache.SYSTEM_INSTRUCTION, prompt

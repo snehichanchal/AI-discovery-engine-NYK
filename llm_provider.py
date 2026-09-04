@@ -53,19 +53,20 @@ def query_llm(provider: str, api_key: str, model_name: str, prompt: str, system_
         return f"❌ Gemini API Error: {e}"
 
 
-def generate_with_cache(api_key: str, model: str, cache_name: str, question: str):
-    """Answers a question against cached content.
+def generate_with_cache(api_key: str, model: str, cache_name: str, contents):
+    """Answers against cached content.
 
-    Only the question travels on the wire; the dataset is already resident in
-    the cache. Returns (text, usage_metadata) and raises on failure so the
-    caller can fall back to an uncached prompt.
+    `contents` may be a single question or a list of prior conversation turns
+    followed by the new question. Only those travel on the wire; the dataset is
+    already resident in the cache. Returns (text, usage_metadata) and raises on
+    failure so the caller can fall back to an uncached prompt.
     """
     from google.genai import types
 
     client = get_client(api_key)
     response = client.models.generate_content(
         model=model,
-        contents=question,
+        contents=contents,
         config=types.GenerateContentConfig(cached_content=cache_name),
     )
     return response.text, getattr(response, "usage_metadata", None)

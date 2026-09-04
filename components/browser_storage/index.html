@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8" /></head>
+<body>
+<script>
+// Zero-height bridge between Streamlit and the browser's localStorage.
+//
+// Streamlit's session state lives on the server and is discarded when the page
+// is reloaded, so conversation history is mirrored into localStorage here and
+// read back on load. Implements the component postMessage protocol directly so
+// the app needs no npm build step and no third-party dependency.
+
+const STORAGE_KEY = "nykaa_discovery_chat_history_v1";
+
+function send(type, extra) {
+  window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type: type }, extra), "*");
+}
+
+function setValue(value) {
+  send("streamlit:setComponentValue", { value: value, dataType: "json" });
+}
+
+function readStored() {
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (e) {
+    // Private mode, disabled site data, or corrupt JSON: behave as if empty.
+    return [];
+  }
+}
+
+function writeStored(history) {
+  try {
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(history));
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+let reported = false;
+
+window.addEventListener("message", function (event) {
+  if (!event.data || event.data.type !== "streamlit:render") return;
+
+  const args = event.data.args || {};
+
+  if (args.action === "save" && Array.isArray(args.history)) {
+    writeStored(args.history);
+  } else if (args.action === "clear") {
+    try { window.localStorage.removeItem(STORAGE_KEY); } catch (e) {}
+  }
+
+  // Report the stored history exactly once per page load. Returning a new value
+  // on every render would retrigger a Streamlit rerun and loop forever.
+  if (!reported) {
+    reported = true;
+    setValue({ loaded: true, history: readStored() });
+  }
+});
+
+send("streamlit:componentReady", { apiVersion: 1 });
+send("streamlit:setFrameHeight", { height: 0 });
+</script>
+</body>
+</html>

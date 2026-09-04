@@ -21,6 +21,7 @@ import streamlit as st
 
 from auth import (AuthError, SESSION_TTL_SECONDS, credentials_configured,
                   issue_session_token, verify_session_token)
+import gemini_cache
 from preprocess import process_and_save, DATA_SOURCES
 from rag_engine import search_and_answer
 from context_engine import query_massive_context
@@ -69,7 +70,7 @@ st.markdown("""
 # LLM Configuration (server-side only; never sent to the browser)
 PROVIDER = "gemini"           # dispatch key for llm_provider.query_llm()
 PROVIDER_LABEL = "Google Gemini"
-MODEL_NAME = "gemini-flash-latest"
+MODEL_NAME = os.environ.get("GEMINI_MODEL", "").strip() or "gemini-flash-latest"
 
 
 def get_api_key():
@@ -228,6 +229,7 @@ if not os.path.exists(csv_path) or not os.path.exists(vector_db_path) or not os.
 if st.sidebar.button("🔄 Run / Refresh Data Pre-processing"):
     with st.spinner("Processing 8 raw datasets & building vector index..."):
         csv_out = process_and_save()
+        gemini_cache.invalidate()
         st.sidebar.success("✅ Pre-processing & indexing complete!")
 
 
@@ -291,9 +293,10 @@ with tab1:
 # TAB 2: MASSIVE CONTEXT ENGINE (5TH APPROACH)
 with tab2:
     st.subheader("Massive Context Engine (5th Approach - Whole Dataset Prompting)")
-    st.caption("Feeds the entire filtered CSV text directly into an LLM with massive context window. Supports Context Caching.")
-
-    caching_enabled = st.checkbox("Enable Context Caching Optimization (Recommended for Gemini / Claude)", value=True)
+    st.caption(
+        "The full dataset lives in a shared Gemini context cache, uploaded once and "
+        "reused by every query. Only your question travels on the wire."
+    )
 
     mc_query = st.text_input(
         "Ask a holistic question over the entire dataset:",
@@ -307,26 +310,43 @@ with tab2:
         elif not mc_query.strip():
             st.warning("Please enter a question.")
         else:
-            with st.spinner(f"Processing whole dataset context & querying {PROVIDER_LABEL}..."):
-                answer, total_records, est_tokens, elapsed_time = query_massive_context(
+            spinner_text = (
+                "Building the shared dataset cache (one-time), then querying "
+                f"{PROVIDER_LABEL}..."
+                if not gemini_cache.cache_status()["cache_name"]
+                else f"Querying {PROVIDER_LABEL} against the cached dataset..."
+            )
+            with st.spinner(spinner_text):
+                mc_result = query_massive_context(
                     query=mc_query,
                     selected_sources=selected_sources,
                     provider=PROVIDER,
                     api_key=API_KEY,
                     model_name=MODEL_NAME,
-                    enable_caching=caching_enabled,
-                    session_token=SESSION_TOKEN
+                    session_token=SESSION_TOKEN,
+                    all_sources=list(DATA_SOURCES.keys())
                 )
 
             st.markdown("### 📊 Query Execution Metrics")
             mcol1, mcol2, mcol3, mcol4 = st.columns(4)
-            mcol1.metric("Ingested Records", f"{total_records:,}")
-            mcol2.metric("Estimated Tokens", f"{est_tokens:,}")
-            mcol3.metric("Latency", f"{elapsed_time} s")
-            mcol4.metric("Context Caching", "Active" if caching_enabled else "Disabled")
+            mcol1.metric("Cached Records", f"{mc_result.total_records:,}")
+            mcol2.metric("Cached Tokens", f"{mc_result.cached_tokens:,}")
+            fresh_tokens = max(0, mc_result.prompt_tokens - mc_result.cached_tokens)
+            mcol3.metric("Fresh Tokens", f"{fresh_tokens:,}")
+            mcol4.metric("Latency", f"{mc_result.elapsed_seconds} s")
+
+            if mc_result.cache_created:
+                st.info("Shared cache built by this query. Every later query reuses it.")
+            if mc_result.cache_error:
+                st.warning(
+                    "Context caching unavailable, so the full dataset was sent uncached "
+                    f"(this query cost more than it needed to). Reason: {mc_result.cache_error}"
+                )
+            if mc_result.sources_note:
+                st.caption(mc_result.sources_note)
 
             st.markdown("### 💡 Comprehensive Whole-Dataset Synthesis")
-            st.success(answer)
+            st.success(mc_result.answer)
 
 
 def safe_dataframe(df, **kwargs):

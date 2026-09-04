@@ -1,74 +1,114 @@
+"""Massive Context Engine: answers questions against the whole dataset.
+
+The dataset lives in a single global Gemini context cache (see gemini_cache.py),
+so a query sends only the question rather than ~99k tokens of feedback. If the
+cache is unavailable for any reason, the engine falls back to sending the full
+prompt uncached -- a caching failure costs money, never availability.
+"""
+
 import os
-import pandas as pd
 import time
+from dataclasses import dataclass, field
+
+import gemini_cache
 from auth import AuthError, verify_session_token
-from llm_provider import query_llm
+from llm_provider import generate_uncached, generate_with_cache
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-PROCESSED_CSV = os.path.join(BASE_DIR, "processed_data", "unified_feedback.csv")
+PROCESSED_CSV = gemini_cache.PROCESSED_CSV
 
 
-def query_massive_context(query: str, selected_sources: list, provider: str, api_key: str, model_name: str, enable_caching: bool = True, session_token: str = ""):
+@dataclass
+class MassiveContextResult:
+    """Outcome of one whole-dataset query."""
+
+    answer: str = ""
+    total_records: int = 0
+    prompt_tokens: int = 0
+    cached_tokens: int = 0
+    elapsed_seconds: float = 0.0
+    cache_created: bool = False
+    cache_error: str = ""
+    sources_note: str = ""
+
+
+def _source_instruction(selected_sources, all_sources) -> str:
+    """Instruction restricting the answer to a subset of sources.
+
+    The cache holds every record, so narrowing is expressed to the model rather
+    than by filtering the content -- filtering would change the cached prefix
+    and require a separate cache per combination.
     """
-    Requires a valid session token; refused without one.
+    if not selected_sources or not all_sources:
+        return ""
+    if set(selected_sources) >= set(all_sources):
+        return ""
+    names = ", ".join(sorted(selected_sources))
+    return (
+        "IMPORTANT: Consider ONLY records whose source_key is one of: "
+        f"{names}. Ignore every record from any other source, and say so if "
+        "that leaves nothing relevant.\n\n"
+    )
 
-    Approach 5: Massive Context Window (Direct Prompting)
-    Passes the entire feedback dataset (filtered by selected sources) directly into the LLM context.
-    Supports context caching optimization for Gemini & Claude.
-    """
+
+def query_massive_context(query: str, selected_sources: list, provider: str, api_key: str,
+                          model_name: str, session_token: str = "",
+                          all_sources: list = None) -> MassiveContextResult:
+    """Requires a valid session token; refused without one."""
     try:
         verify_session_token(session_token)
     except AuthError as e:
-        return f"🔒 {e}", 0, 0, 0
+        return MassiveContextResult(answer=f"🔒 {e}")
 
     if not query.strip():
-        return "Please enter a question.", 0, 0, 0
+        return MassiveContextResult(answer="Please enter a question.")
+
+    if not api_key:
+        return MassiveContextResult(answer="⚠️ Error: GEMINI_API_KEY is not configured on the server.")
 
     if not os.path.exists(PROCESSED_CSV):
-        return "⚠️ Processed data CSV not found. Please run Data Pre-processing script first.", 0, 0, 0
-
-    df = pd.read_csv(PROCESSED_CSV)
-
-    if selected_sources:
-        df = df[df["source_key"].isin(selected_sources)]
-
-    if df.empty:
-        return "No records available for the selected data sources.", 0, 0, 0
-
-    total_records = len(df)
-
-    # Convert dataset to text format for prompt context
-    feedback_text_list = []
-    for idx, row in df.iterrows():
-        entry = (
-            f"--- Record #{idx+1} ---\n"
-            f"Source: {row.get('source_name', 'Unknown')} | Platform: {row.get('platform', 'N/A')} | Author: {row.get('author', 'Anonymous')}\n"
-            f"Text: {row.get('text', '')}"
+        return MassiveContextResult(
+            answer="⚠️ Processed data CSV not found. Please run Data Pre-processing script first."
         )
-        feedback_text_list.append(entry)
 
-    full_context_text = "\n\n".join(feedback_text_list)
-    estimated_words = len(full_context_text.split())
-    estimated_tokens = int(estimated_words * 1.3)
-
-    system_prompt = (
-        "You are an expert AI Discovery Engine with full access to the complete user feedback dataset provided below. "
-        "Analyze the entire dataset thoroughly to answer the user's question with high accuracy, identifying overarching themes, patterns, statistics, or specific feedback as requested."
-    )
-
-    user_prompt = f"COMPLETE USER FEEDBACK DATASET ({total_records} Records):\n\n{full_context_text}\n\n====================\nQuestion: {query}\n\nComprehensive Direct Answer:"
+    result = MassiveContextResult()
+    instruction = _source_instruction(selected_sources, all_sources)
+    if instruction:
+        result.sources_note = "Narrowed to selected sources by instruction."
+    question = f"{instruction}Question: {query}\n\nComprehensive Direct Answer:"
 
     start_time = time.time()
+    try:
+        from llm_provider import get_client
 
-    # Query LLM provider
-    answer = query_llm(
-        provider=provider,
-        api_key=api_key,
-        model_name=model_name,
-        prompt=user_prompt,
-        system_prompt=system_prompt
-    )
+        cache = gemini_cache.get_or_create_cache(get_client(api_key), model_name)
+        result.cache_created = cache.was_created
+        result.total_records = cache.record_count
+        text, usage = generate_with_cache(api_key, model_name, cache.name, question)
+    except Exception as cache_exc:
+        # Caching unavailable (model not cacheable, quota, API error): fall back
+        # to the full uncached prompt so the app keeps working.
+        result.cache_error = str(cache_exc)
+        try:
+            dataset_text, record_count = gemini_cache.build_dataset_text()
+            result.total_records = record_count
+            prompt = (
+                f"COMPLETE USER FEEDBACK DATASET ({record_count} Records):\n\n"
+                f"{dataset_text}\n\n====================\n{question}"
+            )
+            text, usage = generate_uncached(
+                api_key, model_name, gemini_cache.SYSTEM_INSTRUCTION, prompt
+            )
+        except Exception as e:
+            result.answer = f"❌ Gemini API Error: {e}"
+            result.elapsed_seconds = round(time.time() - start_time, 2)
+            return result
 
-    elapsed_time = round(time.time() - start_time, 2)
+    result.elapsed_seconds = round(time.time() - start_time, 2)
+    result.answer = text or ""
 
-    return answer, total_records, estimated_tokens, elapsed_time
+    if usage is not None:
+        result.prompt_tokens = getattr(usage, "prompt_token_count", 0) or 0
+        result.cached_tokens = getattr(usage, "cached_content_token_count", 0) or 0
+
+    return result

@@ -16,6 +16,7 @@ except Exception:
     pass
 
 import json
+import re
 import uuid
 import pandas as pd
 from datetime import datetime
@@ -269,6 +270,56 @@ def load_raw_data():
     return records
 
 
+# --- Cleaning rules applied after normalization -------------------------------
+
+# Sources scraped by broad keyword search, so they can contain whole threads
+# that have nothing to do with Nykaa. Review sources (app stores, Trustpilot,
+# Mouthshut, Nykaa's own YouTube channel) are on-topic by construction and are
+# exempt from the relevance filter.
+THREAD_SOURCES = {"reddit_data", "social_media", "youtube_data"}
+
+RELEVANCE_PATTERN = re.compile(
+    r"nykaa|beauty|makeup|cosmetic|skincare|skin care|lipstick|foundation|serum|"
+    r"shampoo|fragrance|perfume|nail|hair|cream|lotion|order|refund|return|deliver|"
+    r"shipping|courier|product|app\b|website|customer care|customer support|checkout|"
+    r"cart|wishlist|coupon|discount|price|fashion|brand|purchase|buy|bought|seller|"
+    r"packaging|damaged|fake|authentic|counterfeit|quality|service|experience|payment|"
+    r"invoice|cancel|complaint|review|store|shop",
+    re.IGNORECASE,
+)
+
+MIN_WORDS = 3
+
+
+def clean_records(records):
+    """Drops exact duplicates, near-empty rows, and off-topic thread chatter.
+
+    Returns (kept_records, stats). Duplicate detection normalizes whitespace and
+    case, so the same review scraped twice with different spacing collapses to one.
+    """
+    kept, seen_text = [], set()
+    stats = {"duplicate": 0, "too_short": 0, "off_topic": 0}
+
+    for rec in records:
+        text = (rec.get("text") or "").strip()
+        normalized = " ".join(text.lower().split())
+
+        if normalized in seen_text:
+            stats["duplicate"] += 1
+            continue
+        if len(text.split()) < MIN_WORDS:
+            stats["too_short"] += 1
+            continue
+        if rec["source_key"] in THREAD_SOURCES and not RELEVANCE_PATTERN.search(normalized):
+            stats["off_topic"] += 1
+            continue
+
+        seen_text.add(normalized)
+        kept.append(rec)
+
+    return kept, stats
+
+
 def process_and_save():
     """Runs data preprocessing, outputs unified CSV, and builds ChromaDB vector store."""
     os.makedirs(PROCESSED_DIR, exist_ok=True)
@@ -277,6 +328,13 @@ def process_and_save():
     print("Loading raw feedback from 8 sources...")
     records = load_raw_data()
     print(f"Successfully normalized {len(records)} feedback records.")
+
+    records, drop_stats = clean_records(records)
+    print(
+        "Cleaning: dropped {duplicate} duplicates, {too_short} near-empty, "
+        "{off_topic} off-topic.".format(**drop_stats)
+    )
+    print(f"Retained {len(records)} records after cleaning.")
 
     df = pd.DataFrame(records)
     csv_path = os.path.join(PROCESSED_DIR, "unified_feedback.csv")

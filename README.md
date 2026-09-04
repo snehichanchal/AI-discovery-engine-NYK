@@ -67,7 +67,7 @@ cp .streamlit/secrets.toml.example .streamlit/secrets.toml
 
 `.streamlit/secrets.toml` is gitignored and will not be committed.
 
-Sessions last 72 hours, after which the app asks for the password again.
+Sessions last 72 hours and survive a page reload — the signed token is kept in the browser's `localStorage` and re-verified on load, so refreshing does not sign you out. Signing out removes it, and an expired or tampered token is rejected.
 
 ## 4. Using the app
 

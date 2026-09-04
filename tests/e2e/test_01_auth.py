@@ -36,3 +36,31 @@ def test_sign_out_returns_to_the_login_gate(app):
     app.wait_for_timeout(3000)
     assert app.locator('button:has-text("Sign in")').count() == 1
     assert app.get_by_role("tab").count() == 0
+
+
+def test_session_survives_a_page_reload(app):
+    """The token is persisted in the browser; a refresh must not sign you out."""
+    app.reload(wait_until="networkidle", timeout=60000)
+    app.wait_for_timeout(6000)
+    assert app.locator('button:has-text("Sign in")').count() == 0
+    assert "Session expires in" in app.content()
+
+
+def test_sign_out_clears_the_stored_token(app):
+    app.get_by_role("button", name="Sign out").click()
+    app.wait_for_timeout(5000)
+    stored = app.evaluate("() => localStorage.getItem('nykaa_discovery_session_v1')")
+    assert stored in (None, "null")
+    app.reload(wait_until="networkidle", timeout=60000)
+    app.wait_for_timeout(5000)
+    assert app.locator('button:has-text("Sign in")').count() == 1
+
+
+def test_a_forged_stored_token_is_rejected(app):
+    app.evaluate(
+        "() => localStorage.setItem('nykaa_discovery_session_v1',"
+        " JSON.stringify('forged.signature'))"
+    )
+    app.reload(wait_until="networkidle", timeout=60000)
+    app.wait_for_timeout(5000)
+    assert app.locator('button:has-text("Sign in")').count() == 1

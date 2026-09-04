@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8" /></head>
+<body>
+<!--
+Zero-height helper that focuses the active tab's text box so typing works
+without clicking first. A declared static component rather than
+st.components.v1.html, which is deprecated in favour of st.iframe -- and
+st.iframe takes a src path, not inline markup.
+-->
+<script>
+const doc = window.parent.document;
+
+function focusActivePanel() {
+  const panels = doc.querySelectorAll('[role="tabpanel"]');
+  for (const panel of panels) {
+    // offsetParent is null for the hidden panels.
+    if (panel.offsetParent === null) continue;
+    const target =
+      panel.querySelector('[data-testid="stChatInput"] textarea') ||
+      panel.querySelector('[data-testid="stTextInput"] input');
+    if (!target) return;
+    const active = doc.activeElement;
+    // Never steal focus from a field the user is already typing in.
+    if (active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA")) return;
+    target.focus();
+    return;
+  }
+}
+
+doc.querySelectorAll('[role="tab"]').forEach(tab => {
+  tab.addEventListener("click", () => setTimeout(focusActivePanel, 250));
+});
+
+// Initial load, after Streamlit has painted the first panel.
+setTimeout(focusActivePanel, 600);
+</script>
+<script>
+// Custom components must announce themselves or Streamlit leaves a placeholder.
+window.parent.postMessage({isStreamlitMessage: true, type: "streamlit:componentReady", apiVersion: 1}, "*");
+window.parent.postMessage({isStreamlitMessage: true, type: "streamlit:setFrameHeight", height: 0}, "*");
+</script>
+</body>
+</html>

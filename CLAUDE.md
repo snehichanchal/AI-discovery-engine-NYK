@@ -72,3 +72,14 @@ Streamlit re-runs the entire script on every interaction, so anything constructe
 - `app.load_feedback_table()` — `@st.cache_data` keyed on the CSV's mtime, so Tab 3 does not re-parse the file on every rerun.
 
 `gemini_cache` reads the CSV with the stdlib `csv` module rather than pandas: it only concatenates strings, so materializing a DataFrame of the whole dataset was wasted work.
+
+## Browser storage bridge
+
+`components/browser_storage/` backs two stores via `browser_storage.py`: the Tab 2 chat history and the session token (so a refresh does not sign the user out — `st.session_state` is per page load).
+
+Two rules, both learned from failures:
+
+- **Each bridge may be rendered at most once per script run.** Rendering the same component key twice raises `StreamlitDuplicateElementKey`. Writes are therefore *queued* (`queue_save`, `queue_token_clear`, …) and performed by the single `sync_chat()` / `sync_session_token()` call.
+- **Never issue a write immediately before `st.rerun()`** — the rerun replaces the component's pending args before the browser commits them. Queue it and let the next run perform it.
+
+The restored token is re-verified through `verify_session_token()`, so an expired or tampered copy is rejected rather than trusted.

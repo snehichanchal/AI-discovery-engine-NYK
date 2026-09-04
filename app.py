@@ -20,9 +20,9 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
+import browser_storage
 from auth import (AuthError, SESSION_TTL_SECONDS, credentials_configured,
                   issue_session_token, verify_session_token)
-import browser_storage
 import gemini_cache
 from preprocess import process_and_save, DATA_SOURCES
 import rag_engine
@@ -166,7 +166,37 @@ def current_session_token():
     except AuthError as e:
         st.session_state.clear()
         st.session_state["auth_message"] = str(e)
+        browser_storage.queue_token_clear()
         return ""
+
+
+def restore_session_from_browser():
+    """Adopts a still-valid token saved in this browser.
+
+    st.session_state is per page load, so without this every refresh lands on
+    the login form. The token is signed and expiring, so a stale or tampered
+    copy is rejected here rather than trusted.
+
+    Performs this run's single token-bridge render, so it must be called
+    exactly once and before anything else touches that bridge.
+    """
+    stored = browser_storage.sync_session_token()
+
+    if st.session_state.get("session_token"):
+        return
+    if stored is None or not stored:
+        # Not reported yet, or nothing stored: fall through to the login form
+        # rather than blocking, in case the browser never reports.
+        return
+
+    try:
+        claims = verify_session_token(stored)
+    except AuthError:
+        browser_storage.queue_token_clear()
+        return
+    st.session_state["session_token"] = stored
+    st.session_state["username"] = claims.get("sub", "")
+    st.rerun()
 
 
 def require_login():
@@ -176,6 +206,8 @@ def require_login():
     token lives in st.session_state and is re-verified on each run. Nothing
     below this call executes for an unauthenticated session.
     """
+    restore_session_from_browser()
+
     if current_session_token():
         return
 
@@ -196,9 +228,13 @@ def require_login():
         if submitted:
             from auth import verify_credentials
             if verify_credentials(username, password):
+                token = issue_session_token(username.strip())
                 st.session_state.clear()
-                st.session_state["session_token"] = issue_session_token(username.strip())
+                st.session_state["session_token"] = token
                 st.session_state["username"] = username.strip()
+                # Persisted on the next run; see browser_storage's
+                # single-render contract.
+                browser_storage.queue_token_save(token)
                 st.rerun()
             else:
                 st.error("Invalid username or password.")
@@ -243,6 +279,7 @@ st.sidebar.caption(f"Signed in as **{st.session_state.get('username', '')}**")
 st.sidebar.caption(f"Session expires in ~{_hours_left}h (max {SESSION_TTL_SECONDS // 3600}h).")
 if st.sidebar.button("Sign out"):
     st.session_state.clear()
+    browser_storage.queue_token_clear()
     st.rerun()
 
 st.sidebar.divider()
@@ -280,38 +317,12 @@ tab1, tab2, tab3 = st.tabs([
 # Focus the active tab's text box so typing works without clicking first.
 # Runs in a zero-height iframe; Streamlit re-renders the panel on every tab
 # switch, so this listens for tab clicks rather than firing once on load.
-components.html(
-    """
-<script>
-const doc = window.parent.document;
-
-function focusActivePanel() {
-  const panels = doc.querySelectorAll('[role="tabpanel"]');
-  for (const panel of panels) {
-    // offsetParent is null for the hidden panels.
-    if (panel.offsetParent === null) continue;
-    const target =
-      panel.querySelector('[data-testid="stChatInput"] textarea') ||
-      panel.querySelector('[data-testid="stTextInput"] input');
-    if (!target) return;
-    const active = doc.activeElement;
-    // Never steal focus from a field the user is already typing in.
-    if (active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA")) return;
-    target.focus();
-    return;
-  }
-}
-
-doc.querySelectorAll('[role="tab"]').forEach(tab => {
-  tab.addEventListener("click", () => setTimeout(focusActivePanel, 250));
-});
-
-// Initial load, after Streamlit has painted the first panel.
-setTimeout(focusActivePanel, 600);
-</script>
-    """,
-    height=0,
+_autofocus_component = components.declare_component(
+    "tab_autofocus",
+    path=os.path.join(os.path.dirname(os.path.abspath(__file__)), "components", "autofocus"),
 )
+# Focus the active tab's text box so typing works without clicking first.
+_autofocus_component(key="tab_autofocus")
 
 
 # TAB 1: RAG DISCOVERY ENGINE
@@ -370,15 +381,8 @@ with tab2:
 
     # Restore the conversation from localStorage. Server-side session state is
     # discarded on page reload, so without this a refresh would lose the thread.
-    browser_storage.load_once()
+    browser_storage.sync_chat()
     history = st.session_state.setdefault(browser_storage.HISTORY_KEY, [])
-
-    # A clear sets this flag and reruns; the write happens here, on a render
-    # that is not immediately followed by another rerun. Writing inside the
-    # button handler instead would race -- the rerun replaces the component's
-    # pending args before the browser ever commits them.
-    if st.session_state.pop("mc_pending_clear", False):
-        browser_storage.save([])
 
     hcol1, hcol2 = st.columns([4, 1])
     with hcol1:
@@ -387,7 +391,7 @@ with tab2:
     with hcol2:
         if history and st.button("🗑️ Clear chat", key="btn_clear_chat"):
             st.session_state[browser_storage.HISTORY_KEY] = []
-            st.session_state["mc_pending_clear"] = True
+            browser_storage.queue_clear()
             st.rerun()
 
     # Transcript
@@ -472,7 +476,8 @@ with tab2:
                 },
             })
             st.session_state[browser_storage.HISTORY_KEY] = history
-            browser_storage.save(history)
+            browser_storage.queue_save(history)
+            st.rerun()
 
 
 @st.cache_data(show_spinner=False)

@@ -22,3 +22,6 @@ node_modules/
 playwright_profile/
 *.log
 
+
+# Test artifacts
+.pytest_cache/

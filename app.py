@@ -18,6 +18,7 @@ except Exception:
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 from auth import (AuthError, SESSION_TTL_SECONDS, credentials_configured,
                   issue_session_token, verify_session_token)
@@ -267,15 +268,52 @@ st.markdown('<div class="sub-header">Ingest user feedback across 8 public domain
 
 # Tabs
 tab1, tab2, tab3 = st.tabs([
-    "🎯 Tab 1: RAG Discovery Engine (Approaches 1 & 3)",
-    "⚡ Tab 2: Massive Context Engine (5th Approach)",
+    "🎯 Tab 1: RAG Discovery Engine",
+    "⚡ Tab 2: Massive Context Engine",
     "📊 Tab 3: Data Explorer & Stats"
 ])
 
 
+# Focus the active tab's text box so typing works without clicking first.
+# Runs in a zero-height iframe; Streamlit re-renders the panel on every tab
+# switch, so this listens for tab clicks rather than firing once on load.
+components.html(
+    """
+<script>
+const doc = window.parent.document;
+
+function focusActivePanel() {
+  const panels = doc.querySelectorAll('[role="tabpanel"]');
+  for (const panel of panels) {
+    // offsetParent is null for the hidden panels.
+    if (panel.offsetParent === null) continue;
+    const target =
+      panel.querySelector('[data-testid="stChatInput"] textarea') ||
+      panel.querySelector('[data-testid="stTextInput"] input');
+    if (!target) return;
+    const active = doc.activeElement;
+    // Never steal focus from a field the user is already typing in.
+    if (active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA")) return;
+    target.focus();
+    return;
+  }
+}
+
+doc.querySelectorAll('[role="tab"]').forEach(tab => {
+  tab.addEventListener("click", () => setTimeout(focusActivePanel, 250));
+});
+
+// Initial load, after Streamlit has painted the first panel.
+setTimeout(focusActivePanel, 600);
+</script>
+    """,
+    height=0,
+)
+
+
 # TAB 1: RAG DISCOVERY ENGINE
 with tab1:
-    st.subheader("RAG Discovery Engine (Vector Search + Semantic QA)")
+    st.subheader("RAG Discovery Engine")
     st.caption("Retrieves top matching feedback snippets from ChromaDB and generates a grounded answer.")
 
     col1, col2 = st.columns([3, 1])

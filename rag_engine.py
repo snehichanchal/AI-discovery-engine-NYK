@@ -61,9 +61,13 @@ def search_and_answer(query: str, selected_sources: list, provider: str, api_key
             embedding_function=sentence_transformer_ef
         )
 
-        # Build metadata filter if specific sources are selected
+        # Build metadata filter if a strict subset of sources is selected.
+        # Counted against DATA_SOURCES rather than a literal: with a hardcoded
+        # 8, selecting 8 of 9 sources would have silently searched all of them.
+        from preprocess import DATA_SOURCES
+
         where_filter = None
-        if selected_sources and len(selected_sources) < 8:
+        if selected_sources and len(selected_sources) < len(DATA_SOURCES):
             if len(selected_sources) == 1:
                 where_filter = {"source_key": selected_sources[0]}
             else:

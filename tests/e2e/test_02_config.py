@@ -19,8 +19,13 @@ def test_no_api_key_input_is_exposed(app):
     assert app.locator('input[type="password"]').count() == 0
 
 
-def test_all_eight_sources_listed_and_checked(app):
+def test_all_sources_listed_and_checked(app):
     checkboxes = app.locator('[data-testid="stSidebar"] input[type="checkbox"]')
-    assert checkboxes.count() == 8
-    for i in range(8):
+    assert checkboxes.count() == 9
+    for i in range(9):
         assert checkboxes.nth(i).is_checked()
+
+
+def test_primary_research_is_listed_first(app):
+    labels = [t.strip() for t in app.locator('[data-testid="stSidebar"] label').all_inner_texts() if t.strip()]
+    assert labels[0] == "User Interviews (Primary Research)"

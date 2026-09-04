@@ -1,11 +1,13 @@
 # User Feedback Discovery Engine
 
-A Streamlit app that ingests scraped Nykaa customer feedback from 8 public sources, normalizes it into a single dataset, indexes it in a local ChromaDB vector store, and lets you ask natural-language questions about it using Google Gemini (`gemini-flash-latest`).
+A Streamlit app that ingests first-party user-interview transcripts plus scraped Nykaa customer feedback from 8 public sources, normalizes it into a single dataset, indexes it in a local ChromaDB vector store, and lets you ask natural-language questions about it using Google Gemini (`gemini-flash-latest`).
 
 It offers two contrasting query strategies side by side:
 
 - **Tab 1 — RAG Discovery Engine**: semantic search retrieves the top-K most relevant feedback snippets, and only those go to the LLM. Cheap, fast, cites its sources.
-- **Tab 2 — Massive Context Engine**: a conversational view over the *entire* dataset (1,935 records, ~179k tokens). The dataset is uploaded once to a shared Gemini context cache, so each question costs only ~20 fresh tokens instead of re-sending everything. Answers holistic "rank every complaint by frequency" questions that retrieval would miss. Chat history is kept in your browser.
+- **Tab 2 — Massive Context Engine**: a conversational view over the *entire* dataset (2,193 records, ~211k tokens). The dataset is uploaded once to a shared Gemini context cache, so each question costs only ~20 fresh tokens instead of re-sending everything. Answers holistic "rank every complaint by frequency" questions that retrieval would miss. Chat history is kept in your browser.
+Selecting a tab focuses its text box, so you can start typing immediately.
+
 - **Tab 3 — Data Explorer**: record counts per source and a filterable table of everything ingested.
 
 The repository ships with the scraped data, the processed CSV, and a prebuilt vector index, so it runs immediately after clone — no scraping or re-indexing required.
@@ -69,14 +71,14 @@ Sessions last 72 hours, after which the app asks for the password again.
 
 ## 4. Using the app
 
-1. Leave all 8 data sources checked, or uncheck sources to narrow the search.
+1. Leave all 9 data sources checked, or uncheck sources to narrow the search.
 2. Ask a question in Tab 1 or Tab 2.
 
 The provider and model are fixed (`gemini-flash-latest`) and shown in the sidebar for reference.
 
 Tab 2 is a chat: ask follow-up questions and it carries the previous turns. The transcript is stored in **your browser** (`localStorage`), so it survives a page reload but is never sent to the server, shared with other viewers, or synced across devices. "Clear chat" wipes it.
 
-Costs: Tab 1 sends a handful of snippets. Tab 2 serves the dataset from a shared Gemini cache — the first query after a data change uploads ~179k tokens once, and every question after that costs roughly 20 fresh tokens. The metrics under each answer show cached vs fresh tokens for that turn.
+Costs: Tab 1 sends a handful of snippets. Tab 2 serves the dataset from a shared Gemini cache — the first query after a data change uploads ~211k tokens once, and every question after that costs roughly 20 fresh tokens. The metrics under each answer show cached vs fresh tokens for that turn.
 
 ---
 
@@ -85,6 +87,12 @@ Costs: Tab 1 sends a handful of snippets. Tab 2 serves the dataset from a shared
 **Never edit `processed_data/unified_feedback.csv` by hand.** It is generated, and `preprocess.py` overwrites it completely — manual edits are lost on the next run. Add data as raw JSON and regenerate.
 
 Data flows one way: **raw JSON → `preprocess.py` → `processed_data/unified_feedback.csv` + `vector_db/` → the app**.
+
+### The user-interview source
+
+`user-interviews/*.txt` holds first-party research transcripts and is listed **first** in the sidebar. Unlike every other source it is plain text, not JSON: speaker-labelled Hindi, one turn per line (`साक्षात्कारकर्ता:` / `प्रतिभागी:`). `parse_interview()` in `preprocess.py` splits each file into one record per participant answer, carrying the preceding question for context, with a deterministic id so the CSV stays stable across re-runs. The directory is globbed, so **dropping in another `.txt` needs no code change** — just re-run Step 3.
+
+> **Known limitation.** The transcripts are Hindi, but the vector index uses `all-MiniLM-L6-v2`, an English-centric model. Measured behaviour: an English query such as "wishlist bookmark purchase intent" returns **0 of 5** interview records, while the Hindi "विशलिस्ट बुकमार्क" returns **5 of 5**. So in **Tab 1 (RAG)** the interviews are reliably reachable only by Hindi queries, or by unchecking the other sources. **Tab 2 is unaffected** — Gemini reads the transcripts natively and cites them accurately. Fixing Tab 1 properly would mean a multilingual embedding model (and a full re-index) or translating the transcripts during preprocessing.
 
 ### Step 1 — Produce the raw JSON
 
@@ -124,8 +132,8 @@ A cleaning pass runs first, so the retained total is lower than the raw count:
 
 ```
 Cleaning: dropped 83 duplicates, 18 near-empty, 262 off-topic.
-Retained 1935 records after cleaning.
-Successfully indexed 1935 records into ChromaDB vector database.
+Retained 2193 records after cleaning.
+Successfully indexed 2193 records into ChromaDB vector database.
 ```
 
 Duplicates are compared on normalized text; near-empty means fewer than 3 words; the off-topic filter applies **only** to the broad-search sources (`reddit_data`, `social_media`, `youtube_data`), since the review sources are on-topic by construction. Tune the rules via `THREAD_SOURCES`, `RELEVANCE_PATTERN`, and `MIN_WORDS` at the top of `preprocess.py`.
@@ -135,7 +143,7 @@ Duplicates are compared on normalized text; near-empty means fewer than 3 words;
 `tests/e2e/test_04_tabs_1_and_3.py` asserts the count shown in Tab 3:
 
 ```python
-EXPECTED_RECORDS = "1,935"   # <- set this to your new total
+EXPECTED_RECORDS = "2,193"   # <- set this to your new total
 ```
 
 That test failing after a re-index is intentional — it is a tripwire proving the data actually changed.
@@ -168,7 +176,7 @@ Use `git add vector_db/` as a **directory**. The HNSW index lives in a UUID-name
 
 ### What happens automatically after the push
 
-Streamlit Cloud redeploys. Because the CSV changed, its fingerprint changes, so the first Tab 2 query builds a **new** Gemini context cache — one ~179k-token upload, a few seconds — and every question after that is cheap again. Tab 1 uses the committed vector index immediately, with no re-embedding on the server. Nothing else needs touching.
+Streamlit Cloud redeploys. Because the CSV changed, its fingerprint changes, so the first Tab 2 query builds a **new** Gemini context cache — one ~211k-token upload, a few seconds — and every question after that is cheap again. Tab 1 uses the committed vector index immediately, with no re-embedding on the server. Nothing else needs touching.
 
 Two caveats:
 

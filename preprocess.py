@@ -15,6 +15,7 @@ try:
 except Exception:
     pass
 
+import glob
 import json
 import re
 import uuid
@@ -27,7 +28,14 @@ PROCESSED_DIR = os.path.join(BASE_DIR, "processed_data")
 VECTOR_DB_DIR = os.path.join(BASE_DIR, "vector_db")
 
 # Mapping of file source keys to relative paths and display names
+# Ordering here drives the sidebar's "Data Source Selection" list. Primary
+# research sits at the top, ahead of the scraped public sources.
 DATA_SOURCES = {
+    "user_interviews": {
+        "name": "User Interviews (Primary Research)",
+        # Globbed so newly added transcripts are picked up without a code edit.
+        "paths": sorted(glob.glob(os.path.join(BASE_DIR, "user-interviews", "*.txt")))
+    },
     "community_discussions": {
         "name": "Community Discussions (Mouthshut)",
         "paths": [
@@ -83,10 +91,39 @@ DATA_SOURCES = {
 }
 
 
+INTERVIEWER_PREFIX = "साक्षात्कारकर्ता:"
+PARTICIPANT_PREFIX = "प्रतिभागी:"
+
+
+def parse_interview(path):
+    """Splits a transcript into (question, answer) turns.
+
+    Transcripts are speaker-labelled Hindi text, one turn per line. Each
+    participant answer becomes a record carrying the interviewer's preceding
+    question, which keeps chunks small enough to embed and gives each one
+    enough context to stand alone.
+    """
+    pairs, pending_question = [], ""
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith(INTERVIEWER_PREFIX):
+                pending_question = line[len(INTERVIEWER_PREFIX):].strip()
+            elif line.startswith(PARTICIPANT_PREFIX):
+                answer = line[len(PARTICIPANT_PREFIX):].strip()
+                if answer:
+                    pairs.append((pending_question, answer))
+                pending_question = ""
+    return pairs
+
+
 def load_raw_data():
     """Reads all raw JSON datasets (including newer scraped wishlist files) and normalizes them into a unified list of dicts."""
     records = []
     seen_ids = set()
+    interview_seq = {}
 
     for source_key, info in DATA_SOURCES.items():
         source_paths = info.get("paths", [])
@@ -98,10 +135,43 @@ def load_raw_data():
                 continue
 
             try:
+                if source_key == "user_interviews":
+                    stem = os.path.splitext(os.path.basename(file_path))[0]
+                    participant = f"Participant {interview_seq.setdefault(stem, len(interview_seq) + 1)}"
+                    # The filename carries a millisecond epoch stamp.
+                    try:
+                        stamp = int(stem.rsplit("-", 1)[-1]) / 1000
+                        recorded = datetime.fromtimestamp(stamp).isoformat(timespec="seconds")
+                    except (ValueError, OverflowError, OSError):
+                        recorded = ""
+                    for turn_index, (question, answer) in enumerate(parse_interview(file_path), start=1):
+                        # Deterministic id: keeps the CSV stable across re-runs.
+                        rec_id = f"interview_{stem}_{turn_index}"
+                        if rec_id in seen_ids:
+                            continue
+                        seen_ids.add(rec_id)
+                        text = f"Q: {question}\nA: {answer}" if question else answer
+                        records.append({
+                            "id": rec_id,
+                            "source_key": source_key,
+                            "source_name": source_name,
+                            "platform": "User Interview",
+                            "author": participant,
+                            "rating": "N/A",
+                            "date": recorded,
+                            "url": "",
+                            "text": text
+                        })
+                    continue
+
                 with open(file_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
 
-                if source_key == "community_discussions":
+                if source_key == "user_interviews":
+                    # Handled before the JSON decode below; see the guard above.
+                    pass
+
+                elif source_key == "community_discussions":
                     for item in data:
                         text = f"{item.get('headline', '')}\n{item.get('content', '')}".strip()
                         rec_id = item.get("id") or str(uuid.uuid4())
@@ -325,7 +395,7 @@ def process_and_save():
     os.makedirs(PROCESSED_DIR, exist_ok=True)
     os.makedirs(VECTOR_DB_DIR, exist_ok=True)
 
-    print("Loading raw feedback from 8 sources...")
+    print(f"Loading raw feedback from {len(DATA_SOURCES)} sources...")
     records = load_raw_data()
     print(f"Successfully normalized {len(records)} feedback records.")
 

@@ -2,7 +2,7 @@
 
 from conftest import open_tab
 
-EXPECTED_RECORDS = "1,935"
+EXPECTED_RECORDS = "2,193"
 
 
 def test_tab1_rag_renders_controls(app):
@@ -31,6 +31,7 @@ def test_tab3_lists_all_eight_sources(app):
     open_tab(app, 2)
     body = app.content()
     for name in [
+        "User Interviews (Primary Research)",
         "Apple App Store Reviews",
         "Google Play Store Reviews",
         "Reddit Discussions",

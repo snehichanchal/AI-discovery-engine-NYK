@@ -11,8 +11,11 @@ user-interview transcripts are Hindi. Measured on 60 interview records against
 60 English ones with English queries: the previous English-centric
 all-MiniLM-L6-v2 retrieved 0/20 interview records, Gemini 17/20.
 
-Without GEMINI_API_KEY this falls back to ChromaDB's bundled ONNX MiniLM so
-local work without a key still functions -- with English-only retrieval.
+GEMINI_API_KEY is required. There is deliberately no local fallback: the app
+refuses to start without the key anyway, and a fallback embedder would quietly
+build or query an index whose vectors are incompatible with the real one. That
+also keeps ChromaDB's bundled ONNX model from ever being downloaded (~80 MB) or
+loaded, so onnxruntime stays out of memory.
 """
 
 import os
@@ -22,34 +25,34 @@ GEMINI_EMBED_MODEL = "gemini-embedding-001"
 EMBED_DIMENSIONS = 768
 
 # Stored in the collection metadata and compared at query time.
-EMBEDDER_ID_GEMINI = f"{GEMINI_EMBED_MODEL}:{EMBED_DIMENSIONS}"
-EMBEDDER_ID_FALLBACK = "onnx-all-MiniLM-L6-v2:384"
+EMBEDDER_ID = f"{GEMINI_EMBED_MODEL}:{EMBED_DIMENSIONS}"
 
-
-def gemini_key_available() -> bool:
-    return bool(os.environ.get("GEMINI_API_KEY", "").strip())
+_EMBEDDER = None
 
 
 def embedder_id() -> str:
-    """Identifies the embedder that will be used right now."""
-    return EMBEDDER_ID_GEMINI if gemini_key_available() else EMBEDDER_ID_FALLBACK
+    return EMBEDDER_ID
 
 
 def get_embedding_function():
-    """Returns the shared embedding function.
+    """Returns the shared embedding function, constructed once per process."""
+    global _EMBEDDER
+    if _EMBEDDER is not None:
+        return _EMBEDDER
 
-    Gemini when a key is configured (multilingual, handles the Hindi
-    transcripts), otherwise ChromaDB's bundled ONNX MiniLM.
-    """
+    if not os.environ.get("GEMINI_API_KEY", "").strip():
+        raise RuntimeError(
+            "GEMINI_API_KEY is required to embed or query the vector index."
+        )
+
     from chromadb.utils import embedding_functions
 
-    if gemini_key_available():
-        return embedding_functions.GoogleGenaiEmbeddingFunction(
-            model_name=GEMINI_EMBED_MODEL,
-            dimension=EMBED_DIMENSIONS,
-            api_key_env_var="GEMINI_API_KEY",
-        )
-    return embedding_functions.DefaultEmbeddingFunction()
+    _EMBEDDER = embedding_functions.GoogleGenaiEmbeddingFunction(
+        model_name=GEMINI_EMBED_MODEL,
+        dimension=EMBED_DIMENSIONS,
+        api_key_env_var="GEMINI_API_KEY",
+    )
+    return _EMBEDDER
 
 
 def check_index_matches(collection):

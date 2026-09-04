@@ -15,6 +15,8 @@ try:
 except Exception:
     pass
 
+import threading
+
 from auth import AuthError, verify_session_token
 from llm_provider import query_llm
 
@@ -27,6 +29,38 @@ def get_embedding_function():
     from embeddings import get_embedding_function as shared
 
     return shared()
+
+
+_COLLECTION_LOCK = threading.Lock()
+_COLLECTION = None
+
+
+def get_collection():
+    """Returns the shared ChromaDB collection.
+
+    Constructing the client and collection costs ~100ms, which was previously
+    paid on every single query. Cached per process, like llm_provider's client.
+    """
+    global _COLLECTION
+    if _COLLECTION is not None:
+        return _COLLECTION
+    with _COLLECTION_LOCK:
+        if _COLLECTION is None:
+            import chromadb
+
+            client = chromadb.PersistentClient(path=VECTOR_DB_DIR)
+            _COLLECTION = client.get_collection(
+                name="user_feedback",
+                embedding_function=get_embedding_function(),
+            )
+        return _COLLECTION
+
+
+def reset_collection():
+    """Drops the cached handle; call after the index is rebuilt."""
+    global _COLLECTION
+    with _COLLECTION_LOCK:
+        _COLLECTION = None
 
 
 def search_and_answer(query: str, selected_sources: list, provider: str, api_key: str, model_name: str, top_k: int = 5, session_token: str = ""):
@@ -49,18 +83,10 @@ def search_and_answer(query: str, selected_sources: list, provider: str, api_key
         return "Please enter a question.", []
 
     try:
-        import chromadb
-
         if not os.path.exists(VECTOR_DB_DIR) or not os.listdir(VECTOR_DB_DIR):
             return "⚠️ Vector database not found. Please run the Data Pre-processing script first.", []
 
-        chroma_client = chromadb.PersistentClient(path=VECTOR_DB_DIR)
-        sentence_transformer_ef = get_embedding_function()
-
-        collection = chroma_client.get_collection(
-            name="user_feedback",
-            embedding_function=sentence_transformer_ef
-        )
+        collection = get_collection()
 
         from embeddings import check_index_matches
 

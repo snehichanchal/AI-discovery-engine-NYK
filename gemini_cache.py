@@ -1,6 +1,6 @@
 """Single global Gemini context cache for the feedback dataset.
 
-The whole dataset (~99k tokens) is uploaded to Gemini exactly once and reused by
+The whole dataset (~211k tokens) is uploaded to Gemini exactly once and reused by
 every query from every user. Cached input tokens bill at a fraction of fresh
 input tokens, and since the dataset is identical for everyone, one cache serves
 the entire app.
@@ -19,8 +19,6 @@ Deliberately free of Streamlit imports so it can be exercised from a script.
 import hashlib
 import os
 import threading
-
-import pandas as pd
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROCESSED_CSV = os.path.join(BASE_DIR, "processed_data", "unified_feedback.csv")
@@ -75,20 +73,36 @@ def dataset_fingerprint() -> str:
     return digest.hexdigest()[:16]
 
 
+def _read_rows():
+    """Streams the CSV with the stdlib reader.
+
+    pandas would materialize a DataFrame of the whole dataset purely to
+    concatenate strings; this keeps the cache-build path lean.
+    """
+    import csv
+
+    csv.field_size_limit(10 ** 7)
+    with open(PROCESSED_CSV, newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            yield row
+
+
+def record_count() -> int:
+    return sum(1 for _ in _read_rows())
+
+
 def build_dataset_text():
     """Renders every record as a text block. Returns (text, record_count)."""
-    df = pd.read_csv(PROCESSED_CSV).fillna("")
     blocks = []
-    # Sequential numbering: the DataFrame index is not a reliable counter.
-    for position, (_, row) in enumerate(df.iterrows(), start=1):
+    for position, row in enumerate(_read_rows(), start=1):
         blocks.append(
             f"--- Record #{position} ---\n"
-            f"Source: {row.get('source_name', 'Unknown')} | "
-            f"Platform: {row.get('platform', 'N/A')} | "
-            f"Author: {row.get('author', 'Anonymous')}\n"
-            f"Text: {row.get('text', '')}"
+            f"Source: {row.get('source_name') or 'Unknown'} | "
+            f"Platform: {row.get('platform') or 'N/A'} | "
+            f"Author: {row.get('author') or 'Anonymous'}\n"
+            f"Text: {row.get('text') or ''}"
         )
-    return "\n\n".join(blocks), len(df)
+    return "\n\n".join(blocks), len(blocks)
 
 
 def _display_name(fingerprint: str) -> str:
@@ -142,17 +156,17 @@ def get_or_create_cache(client, model: str) -> CacheInfo:
 
         from google.genai import types
 
-        record_count = _MEMO["record_count"]
+        count = _MEMO["record_count"]
         existing = _find_existing(client, fingerprint)
         if existing:
-            if not record_count:
-                record_count = len(pd.read_csv(PROCESSED_CSV))
+            if not count:
+                count = record_count()
             _MEMO.update(
-                {"cache_name": existing, "fingerprint": fingerprint, "record_count": record_count}
+                {"cache_name": existing, "fingerprint": fingerprint, "record_count": count}
             )
-            return CacheInfo(existing, fingerprint, record_count)
+            return CacheInfo(existing, fingerprint, count)
 
-        dataset_text, record_count = build_dataset_text()
+        dataset_text, count = build_dataset_text()
         cache = client.caches.create(
             model=model,
             config=types.CreateCachedContentConfig(
@@ -163,9 +177,9 @@ def get_or_create_cache(client, model: str) -> CacheInfo:
             ),
         )
         _MEMO.update(
-            {"cache_name": cache.name, "fingerprint": fingerprint, "record_count": record_count}
+            {"cache_name": cache.name, "fingerprint": fingerprint, "record_count": count}
         )
-        return CacheInfo(cache.name, fingerprint, record_count, was_created=True)
+        return CacheInfo(cache.name, fingerprint, count, was_created=True)
 
 
 def cache_status() -> dict:

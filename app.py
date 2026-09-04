@@ -25,6 +25,7 @@ from auth import (AuthError, SESSION_TTL_SECONDS, credentials_configured,
 import browser_storage
 import gemini_cache
 from preprocess import process_and_save, DATA_SOURCES
+import rag_engine
 from rag_engine import search_and_answer
 from context_engine import query_massive_context
 
@@ -259,6 +260,8 @@ if st.sidebar.button("🔄 Run / Refresh Data Pre-processing"):
     with st.spinner("Processing 8 raw datasets & building vector index..."):
         csv_out = process_and_save()
         gemini_cache.invalidate()
+        rag_engine.reset_collection()
+        load_feedback_table.clear()
         st.sidebar.success("✅ Pre-processing & indexing complete!")
 
 
@@ -472,6 +475,16 @@ with tab2:
             browser_storage.save(history)
 
 
+@st.cache_data(show_spinner=False)
+def load_feedback_table(csv_path, mtime):
+    """Tab 3's table. Keyed on mtime so a re-index invalidates it.
+
+    Streamlit re-runs the whole script on every interaction, so without this the
+    full CSV was parsed again on each one.
+    """
+    return pd.read_csv(csv_path)
+
+
 def safe_dataframe(df, **kwargs):
     try:
         st.dataframe(df, width="stretch", **kwargs)
@@ -484,7 +497,7 @@ with tab3:
 
     csv_file = os.path.join(os.path.dirname(__file__), "processed_data", "unified_feedback.csv")
     if os.path.exists(csv_file):
-        df_all = pd.read_csv(csv_file)
+        df_all = load_feedback_table(csv_file, os.path.getmtime(csv_file))
         
         # Stats Cards
         scol1, scol2, scol3 = st.columns(3)

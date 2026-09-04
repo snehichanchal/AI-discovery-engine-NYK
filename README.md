@@ -94,7 +94,7 @@ Data flows one way: **raw JSON → `preprocess.py` → `processed_data/unified_f
 
 Because the transcripts are Hindi, the vector index uses Gemini's multilingual `gemini-embedding-001` (768 dimensions) rather than an English-only model, so English questions in Tab 1 retrieve Hindi answers. Measured on 60 interview records against 60 English ones: the previous `all-MiniLM-L6-v2` returned **0/20** interview records for English queries, Gemini **17/20**. Transliterating the Hindi to Latin script was tested too and scored **0/20** — phonetic transliteration produces `vishalista`, not `wishlist`, so it does not help.
 
-The embedder is chosen in one place, `embeddings.py`, imported by both `preprocess.py` and `rag_engine.py` so they cannot drift apart. The index records which embedder built it, and Tab 1 refuses to answer with a clear warning if that no longer matches — a mismatch would otherwise return plausible-looking nonsense. Without `GEMINI_API_KEY` the code falls back to the bundled ONNX MiniLM so local work is still possible, with English-only retrieval.
+The embedder is chosen in one place, `embeddings.py`, imported by both `preprocess.py` and `rag_engine.py` so they cannot drift apart. The index records which embedder built it, and Tab 1 refuses to answer with a clear warning if that no longer matches — a mismatch would otherwise return plausible-looking nonsense. `GEMINI_API_KEY` is required — there is no local fallback embedder, which also means ChromaDB's bundled ONNX model is never downloaded or loaded.
 
 Trade-off: query embedding is now a network call, adding roughly 500 ms to a Tab 1 search, and RAG depends on Gemini being reachable.
 

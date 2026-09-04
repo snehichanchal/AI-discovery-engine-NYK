@@ -291,10 +291,8 @@ def process_and_save():
         print("Initializing ChromaDB vector store...")
         chroma_client = chromadb.PersistentClient(path=VECTOR_DB_DIR)
 
-        # SentenceTransformer embedding function with single-thread lock
-        sentence_transformer_ef = embedding_functions.SentenceTransformerEmbeddingFunction(
-            model_name="all-MiniLM-L6-v2"
-        )
+        # ONNX all-MiniLM-L6-v2 embedder; must stay identical to rag_engine.get_embedding_function()
+        sentence_transformer_ef = embedding_functions.DefaultEmbeddingFunction()
 
         # Get or create collection
         collection = chroma_client.get_or_create_collection(

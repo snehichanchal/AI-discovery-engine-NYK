@@ -27,17 +27,21 @@ Pipeline: **raw JSON per source → `preprocess.py` → `processed_data/unified_
 - `preprocess.py` is the single source of truth for data sources. `DATA_SOURCES` maps each `source_key` to a display name and a list of JSON file paths; `load_raw_data()` has a **per-source `if/elif` branch** that maps that source's idiosyncratic field names onto the unified record schema (`id, source_key, source_name, platform, author, rating, date, url, text`), de-duplicating by id via `seen_ids`. Adding a source means adding both a `DATA_SOURCES` entry and a normalization branch. `process_and_save()` then writes the CSV and re-indexes ChromaDB (collection `user_feedback`, batches of 200, deleting all existing ids first).
 - `rag_engine.py` — Tab 1. Embedding similarity search over ChromaDB with a `source_key` metadata `where` filter, top-K snippets fed to the LLM with numbered citations returned to the UI. Note the filter is skipped when `len(selected_sources) >= 8`, which assumes exactly 8 sources exist.
 - `context_engine.py` — Tab 2. No retrieval: reads the whole CSV, filters by `source_key`, and stuffs every record into one prompt. Returns `(answer, total_records, estimated_tokens, elapsed_time)` for the metrics row. The `enable_caching` flag is currently accepted but unused.
-- `llm_provider.py` — one `query_llm()` dispatching on a provider string to Gemini / OpenAI / Anthropic / DeepSeek (DeepSeek via the OpenAI client with a custom `base_url`). Provider SDKs are imported lazily inside each branch. Errors are returned as user-facing strings, never raised — callers do not check for failure.
-- `app.py` — sidebar picks provider + model + source checkboxes (all checked by default) and reads keys from `st.secrets` then `os.environ`; auto-runs `process_and_save()` on startup if the CSV or `vector_db/` is missing (first boot on Streamlit Cloud).
+- `llm_provider.py` — a single `query_llm()` that calls Google Gemini via the lazily-imported `google.generativeai` SDK. Gemini-only by design; the OpenAI/Anthropic/DeepSeek branches were removed along with their SDKs to keep the install small. Errors are returned as user-facing strings, never raised — callers do not check for failure.
+- `app.py` — provider and model are hardcoded (`PROVIDER = "gemini"`, `MODEL_NAME = "gemini-flash-latest"`; note `PROVIDER` is the lowercase dispatch key `query_llm()` matches on, while `PROVIDER_LABEL` is for display). `GEMINI_API_KEY` is read from `os.environ` then `st.secrets`, and the app `st.stop()`s with a configuration error if it is absent. The sidebar offers only source checkboxes (all checked by default). Auto-runs `process_and_save()` on startup if the CSV or `vector_db/` is missing (first boot on Streamlit Cloud).
 
 Both engines take `(query, selected_sources, provider, api_key, model_name)` — keep that shape when adding an engine.
 
 ## Deployment constraints (Streamlit Cloud)
 
-The env-var preamble at the top of `app.py`, `preprocess.py`, and `rag_engine.py` is load-bearing, not boilerplate: single-threading BLAS/tokenizers and pinning `torch` to one thread with autograd off works around Python 3.14 segfaults, and swapping `sqlite3` for `pysqlite3` satisfies ChromaDB's minimum SQLite version on Debian. Preserve this block, before any other imports, in any new module that touches Chroma or torch.
+The env-var preamble at the top of `app.py`, `preprocess.py`, and `rag_engine.py` is load-bearing, not boilerplate: single-threading BLAS/tokenizers avoids segfaults under Streamlit's threading model, and swapping `sqlite3` for `pysqlite3` satisfies ChromaDB's minimum SQLite version on Debian. Preserve this block, before any other imports, in any new module that touches Chroma.
+
+`runtime.txt` pins Python 3.11 for Streamlit Cloud. Embeddings use ChromaDB's bundled ONNX `DefaultEmbeddingFunction` (all-MiniLM-L6-v2) — torch and `sentence-transformers` are deliberately **not** dependencies, which keeps the install ~300 MB and steady-state RSS under ~300 MB. `preprocess.py` and `rag_engine.get_embedding_function()` must always use the same embedder; changing one without re-running `preprocess.py` silently corrupts retrieval. The ONNX weights (~80 MB) download to `~/.cache/chroma` on first use.
 
 `vector_db/` and `processed_data/` are committed so a fresh container can serve queries without re-embedding.
 
-Note: recent commit messages describe migrating to a lightweight ONNX `DefaultEmbeddingFunction`, but the code still uses `SentenceTransformerEmbeddingFunction("all-MiniLM-L6-v2")` in both `preprocess.py` and `rag_engine.py`. If you change one, change both — the index and the query path must use the same embedding model.
-
 Further background: `docs/docs/readme.md` (architecture), `docs/docs/deployment_plan.md`, `docs/docs/implementation_plan.md`.
+
+## API key handling
+
+The key is read server-side and passed straight to `query_llm()`, which makes the outbound call from the server. **Never bind it to a Streamlit widget.** Widget values are serialized to the browser, so prefilling a `text_input` with the key — even `type="password"`, which only masks characters visually — leaks the plaintext to every visitor via the DOM or WebSocket frames. This was the previous behavior and was deliberately removed.

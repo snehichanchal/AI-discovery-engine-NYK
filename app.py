@@ -63,47 +63,56 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
+# LLM Configuration (server-side only; never sent to the browser)
+PROVIDER = "gemini"           # dispatch key for llm_provider.query_llm()
+PROVIDER_LABEL = "Google Gemini"
+MODEL_NAME = "gemini-flash-latest"
+
+
+def get_api_key():
+    """Reads GEMINI_API_KEY from the environment, falling back to st.secrets.
+
+    The key is used only for server-side calls in llm_provider.py and is never
+    bound to a widget, so it never reaches the client.
+
+    st.secrets raises StreamlitSecretNotFoundError (not KeyError) when no
+    secrets.toml exists at all, which is the normal case for a fresh clone.
+    """
+    key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if key:
+        return key
+    try:
+        return str(st.secrets["GEMINI_API_KEY"]).strip()
+    except Exception:
+        return ""
+
+
+API_KEY = get_api_key()
+
+if not API_KEY:
+    # Fail the process rather than rendering a configuration error in the browser.
+    # run.sh performs this same check before the server starts; this guard covers
+    # `streamlit run app.py` invoked directly.
+    sys.stderr.write(
+        "\nERROR: GEMINI_API_KEY is not set.\n\n"
+        "This app reads the Google Gemini API key from the server environment.\n"
+        "Set it and try again:\n\n"
+        "    export GEMINI_API_KEY=\"your-key-here\"\n"
+        "    ./run.sh\n\n"
+        "On Streamlit Community Cloud, add it under App settings -> Secrets as\n"
+        "    GEMINI_API_KEY = \"your-key-here\"\n\n"
+    )
+    sys.stderr.flush()
+    os._exit(1)
+
+
 # Sidebar Configuration
 st.sidebar.title("⚙️ Engine Configuration")
 
-# 1. LLM Provider Selection & API Key Inputs
-st.sidebar.subheader("1. LLM Provider Settings")
-
-provider = st.sidebar.selectbox(
-    "Select LLM Provider",
-    options=["Google Gemini", "OpenAI ChatGPT", "Anthropic Claude", "DeepSeek"],
-    index=0
-)
-
-# Model options per provider
-model_map = {
-    "Google Gemini": ["gemini-1.5-flash", "gemini-1.5-pro"],
-    "OpenAI ChatGPT": ["gpt-4o-mini", "gpt-4o"],
-    "Anthropic Claude": ["claude-3-5-sonnet-20240620", "claude-3-haiku-20240307"],
-    "DeepSeek": ["deepseek-chat", "deepseek-reasoner"]
-}
-
-selected_model = st.sidebar.selectbox("Select Model", options=model_map[provider])
-
-api_key_env_var = {
-    "Google Gemini": "GEMINI_API_KEY",
-    "OpenAI ChatGPT": "OPENAI_API_KEY",
-    "Anthropic Claude": "ANTHROPIC_API_KEY",
-    "DeepSeek": "DEEPSEEK_API_KEY"
-}
-
-def get_secret(key_name):
-    if hasattr(st, "secrets") and key_name in st.secrets:
-        return st.secrets[key_name]
-    return os.environ.get(key_name, "")
-
-default_api_key = get_secret(api_key_env_var[provider])
-api_key = st.sidebar.text_input(
-    f"Enter {provider} API Key",
-    value=default_api_key,
-    type="password",
-    help=f"Enter your API key for {provider}. Keys are held securely in memory or pulled from Streamlit Secrets."
-)
+st.sidebar.subheader("1. LLM Provider")
+st.sidebar.caption(f"Provider: **{PROVIDER_LABEL}**")
+st.sidebar.caption(f"Model: `{MODEL_NAME}`")
+st.sidebar.caption("API key loaded from the server environment.")
 
 st.sidebar.divider()
 
@@ -167,20 +176,18 @@ with tab1:
         top_k = st.slider("Top-K Snippets to Retrieve", min_value=1, max_value=20, value=5)
 
     if st.button("🚀 Ask RAG Engine", type="primary", key="btn_rag"):
-        if not api_key:
-            st.error(f"Please enter your {provider} API Key in the sidebar.")
-        elif not selected_sources:
+        if not selected_sources:
             st.warning("Please select at least one data source from the sidebar checkboxes.")
         elif not user_query.strip():
             st.warning("Please enter a question.")
         else:
-            with st.spinner(f"Retrieving top {top_k} matches from ChromaDB & querying {provider}..."):
+            with st.spinner(f"Retrieving top {top_k} matches from ChromaDB & querying {PROVIDER_LABEL}..."):
                 answer, citations = search_and_answer(
                     query=user_query,
                     selected_sources=selected_sources,
-                    provider=provider,
-                    api_key=api_key,
-                    model_name=selected_model,
+                    provider=PROVIDER,
+                    api_key=API_KEY,
+                    model_name=MODEL_NAME,
                     top_k=top_k
                 )
 
@@ -211,20 +218,18 @@ with tab2:
     )
 
     if st.button("⚡ Query Whole-Dataset Engine", type="primary", key="btn_mc"):
-        if not api_key:
-            st.error(f"Please enter your {provider} API Key in the sidebar.")
-        elif not selected_sources:
+        if not selected_sources:
             st.warning("Please select at least one data source from the sidebar checkboxes.")
         elif not mc_query.strip():
             st.warning("Please enter a question.")
         else:
-            with st.spinner(f"Processing whole dataset context & querying {provider}..."):
+            with st.spinner(f"Processing whole dataset context & querying {PROVIDER_LABEL}..."):
                 answer, total_records, est_tokens, elapsed_time = query_massive_context(
                     query=mc_query,
                     selected_sources=selected_sources,
-                    provider=provider,
-                    api_key=api_key,
-                    model_name=selected_model,
+                    provider=PROVIDER,
+                    api_key=API_KEY,
+                    model_name=MODEL_NAME,
                     enable_caching=caching_enabled
                 )
 

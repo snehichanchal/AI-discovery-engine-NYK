@@ -24,7 +24,7 @@ def test_wrong_username_is_rejected(page):
 def test_valid_credentials_sign_in(app):
     body = app.content()
     assert "Engine Configuration" in body
-    assert app.get_by_role("tab").count() == 3
+    assert app.get_by_role("tab").count() == 2
 
 
 def test_sidebar_reports_session_expiry(app):
@@ -64,3 +64,11 @@ def test_a_forged_stored_token_is_rejected(app):
     app.reload(wait_until="networkidle", timeout=60000)
     app.wait_for_timeout(5000)
     assert app.locator('button:has-text("Sign in")').count() == 1
+
+
+def test_login_screen_points_to_the_presentation_for_credentials(page):
+    assert "last slide of the presentation" in page.content()
+
+
+def test_login_screen_points_to_the_presentation_for_credentials(page):
+    assert "Credentials are on the last slide of the presentation." in page.content()

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-A Streamlit app ("User Feedback Discovery Engine") that ingests scraped Nykaa customer feedback from 8 public sources, normalizes it into one CSV + a ChromaDB vector store, and answers natural-language questions via two contrasting query strategies backed by four swappable LLM providers. There are no tests and no lint config.
+A Streamlit app ("User Feedback Discovery Engine") that ingests scraped Nykaa customer feedback from 8 public sources, normalizes it into one CSV + a ChromaDB vector store, and answers natural-language questions via two contrasting query strategies against Google Gemini. Browser end-to-end tests live in `tests/e2e/`.
 
 ## Commands
 
@@ -61,7 +61,7 @@ Caches are always TTL-bound (no permanent cache exists). Refreshes are driven by
 - **Never count sources with a literal.** `rag_engine` previously used `len(selected_sources) < 8`; adding a 9th source meant selecting 8 of 9 silently searched *all* of them. It now compares against `len(DATA_SOURCES)`.
 - **`embeddings.py` is the only place the embedding model is chosen.** `preprocess.py` and `rag_engine.py` both import from it; never construct an embedding function anywhere else. Default is multilingual `gemini-embedding-001` (768-dim) because the interview transcripts are Hindi — the old English-only MiniLM scored 0/20 on English queries against Hindi records, Gemini 17/20, and transliteration also scored 0/20. There is **no local fallback embedder** and that is deliberate: the app cannot start without the key anyway, and a fallback would quietly build or query an index whose vectors are incompatible. It also keeps ChromaDB's bundled ONNX model from ever downloading (~80 MB) or loading — `onnxruntime` never enters the process.
 - **The collection stores `embedder_id` in its metadata.** `check_index_matches()` compares it at query time and Tab 1 refuses with a warning on a mismatch, rather than returning nonsense. `preprocess.py` drops and rebuilds the collection when the embedder changes, since dimensionality changes too.
-- **`EXPECTED_RECORDS` in `tests/e2e/test_04_tabs_1_and_3.py` must be updated after any re-index.** The failure is a deliberate tripwire.
+- **The app has two tabs**: RAG (Tab 1) and Massive Context (Tab 2). The Data Explorer tab was removed, and with it the only pandas usage in `app.py`.
 
 ## Hot paths
 
@@ -69,7 +69,6 @@ Streamlit re-runs the entire script on every interaction, so anything constructe
 
 - `rag_engine.get_collection()` — the ChromaDB client and collection cost ~100ms to construct and were previously rebuilt on every query. `reset_collection()` drops the handle after a re-index.
 - `embeddings.get_embedding_function()` and `llm_provider.get_client()` — memoized module-level singletons.
-- `app.load_feedback_table()` — `@st.cache_data` keyed on the CSV's mtime, so Tab 3 does not re-parse the file on every rerun.
 
 `gemini_cache` reads the CSV with the stdlib `csv` module rather than pandas: it only concatenates strings, so materializing a DataFrame of the whole dataset was wasted work.
 

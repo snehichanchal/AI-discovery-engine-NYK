@@ -45,8 +45,7 @@ def test_tab2_accepts_typing_without_clicking(app):
     assert app.evaluate("() => document.activeElement.value") == "hello there"
 
 
-def test_tab3_does_not_hijack_focus(app):
-    """Tab 3 has no free-text box; focusing its multiselect would pop a dropdown."""
-    open_tab(app, 2)
-    app.wait_for_timeout(800)
-    assert active_element(app) not in ("INPUT", "TEXTAREA")
+def test_only_two_tabs_remain(app):
+    titles = app.get_by_role("tab").all_inner_texts()
+    assert len(titles) == 2
+    assert not any("Data Explorer" in t for t in titles)

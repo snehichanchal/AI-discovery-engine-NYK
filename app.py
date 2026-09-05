@@ -16,7 +16,6 @@ try:
 except Exception:
     pass
 
-import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
@@ -213,6 +212,7 @@ def require_login():
 
     st.markdown('<div class="main-header">🔍 User Feedback Discovery Engine</div>', unsafe_allow_html=True)
     st.markdown('<div class="sub-header">Sign in to continue.</div>', unsafe_allow_html=True)
+    st.info("Credentials are on the last slide of the presentation.")
 
     expired = st.session_state.get("auth_message")
     if expired:
@@ -298,7 +298,6 @@ if st.sidebar.button("🔄 Run / Refresh Data Pre-processing"):
         csv_out = process_and_save()
         gemini_cache.invalidate()
         rag_engine.reset_collection()
-        load_feedback_table.clear()
         st.sidebar.success("✅ Pre-processing & indexing complete!")
 
 
@@ -307,10 +306,9 @@ st.markdown('<div class="main-header">🔍 User Feedback Discovery Engine</div>'
 st.markdown('<div class="sub-header">Ingest user feedback across 8 public domain sources & ask natural language questions using AI.</div>', unsafe_allow_html=True)
 
 # Tabs
-tab1, tab2, tab3 = st.tabs([
+tab1, tab2 = st.tabs([
     "🎯 Tab 1: RAG Discovery Engine",
-    "⚡ Tab 2: Massive Context Engine",
-    "📊 Tab 3: Data Explorer & Stats"
+    "⚡ Tab 2: Massive Context Engine"
 ])
 
 
@@ -478,50 +476,3 @@ with tab2:
             st.session_state[browser_storage.HISTORY_KEY] = history
             browser_storage.queue_save(history)
             st.rerun()
-
-
-@st.cache_data(show_spinner=False)
-def load_feedback_table(csv_path, mtime):
-    """Tab 3's table. Keyed on mtime so a re-index invalidates it.
-
-    Streamlit re-runs the whole script on every interaction, so without this the
-    full CSV was parsed again on each one.
-    """
-    return pd.read_csv(csv_path)
-
-
-def safe_dataframe(df, **kwargs):
-    try:
-        st.dataframe(df, width="stretch", **kwargs)
-    except Exception:
-        st.dataframe(df, use_container_width=True, **kwargs)
-
-# TAB 3: DATA EXPLORER & STATS
-with tab3:
-    st.subheader("Data Explorer & Source Breakdown")
-
-    csv_file = os.path.join(os.path.dirname(__file__), "processed_data", "unified_feedback.csv")
-    if os.path.exists(csv_file):
-        df_all = load_feedback_table(csv_file, os.path.getmtime(csv_file))
-        
-        # Stats Cards
-        scol1, scol2, scol3 = st.columns(3)
-        scol1.metric("Total Feedback Records", f"{len(df_all):,}")
-        scol2.metric("Active Sources Ingested", len(df_all["source_key"].unique()))
-        scol3.metric("Unique Authors/Users", len(df_all["author"].unique()))
-
-        st.markdown("#### Feedback Count per Source")
-        source_counts = df_all["source_name"].value_counts().reset_index()
-        source_counts.columns = ["Data Source", "Record Count"]
-        safe_dataframe(source_counts)
-
-        st.markdown("#### Ingested Feedback Data Viewer")
-        filter_source = st.multiselect(
-            "Filter Table by Source",
-            options=df_all["source_name"].unique(),
-            default=df_all["source_name"].unique()
-        )
-        filtered_df = df_all[df_all["source_name"].isin(filter_source)]
-        safe_dataframe(filtered_df[["source_name", "platform", "author", "rating", "date", "text"]])
-    else:
-        st.warning("No processed dataset found. Click 'Run / Refresh Data Pre-processing' in the sidebar to generate.")

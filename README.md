@@ -8,7 +8,6 @@ It offers two contrasting query strategies side by side:
 - **Tab 2 — Massive Context Engine**: a conversational view over the *entire* dataset (2,193 records, ~211k tokens). The dataset is uploaded once to a shared Gemini context cache, so each question costs only ~20 fresh tokens instead of re-sending everything. Answers holistic "rank every complaint by frequency" questions that retrieval would miss. Chat history is kept in your browser.
 Selecting a tab focuses its text box, so you can start typing immediately.
 
-- **Tab 3 — Data Explorer**: record counts per source and a filterable table of everything ingested.
 
 The repository ships with the scraped data, the processed CSV, and a prebuilt vector index, so it runs immediately after clone — no scraping or re-indexing required.
 
@@ -73,6 +72,8 @@ Sessions last 72 hours and survive a page reload — the signed token is kept in
 
 1. Leave all 9 data sources checked, or uncheck sources to narrow the search.
 2. Ask a question in Tab 1 or Tab 2.
+
+The login screen points users to the presentation's last slide for credentials.
 
 The provider and model are fixed (`gemini-flash-latest`) and shown in the sidebar for reference.
 
